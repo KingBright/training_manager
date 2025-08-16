@@ -494,7 +494,7 @@
                             <label>源目录 (选择本地开发目录)</label>
                             <input type="file" @change="handleFileSelect" webkitdirectory directory multiple class="form-control" style="padding: 10px; background-color: #f8f9fa; border: 2px dashed #dee2e6; cursor: pointer;">
                             <small v-if="syncConfig.files.length > 0" style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
-                                <i class="fas fa-check-circle"></i> 已选择 {{ syncConfig.files.length }} 个文件。
+                                <i class="fas fa-check-circle"></i> 已选择 {{ syncConfig.files.length }} 个文件，其中 {{ filteredSyncFiles.length }} 个将同步。
                             </small>
                              <small v-else style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
                                 <i class="fas fa-folder-open"></i> 点击上方区域选择要同步的文件夹。
@@ -507,7 +507,7 @@
                                       placeholder="从服务器加载排除模式..." readonly style="background: #e9ecef; opacity: 0.8;"></textarea>
                         </div>
                         
-                        <button type="submit" class="btn" :disabled="isSyncing || syncConfig.files.length === 0">
+                        <button type="submit" class="btn" :disabled="isSyncing || filteredSyncFiles.length === 0">
                             <i class="fas fa-sync-alt" v-if="!isSyncing"></i>
                             <div class="loading" v-if="isSyncing"></div>
                             {{ isSyncing ? '同步中...' : '开始同步' }}
@@ -601,6 +601,28 @@
             computed: {
                 runningTasks() {
                     return this.tasks.filter(task => task.status === 'running');
+                },
+                processedExcludes() {
+                    return (this.syncConfig.defaultExcludes || []).map(pattern => {
+                        // If it's a simple name without glob chars, treat it as a directory pattern.
+                        // This handles cases like `__pycache__` or `.git`.
+                        if (!pattern.includes('*') && !pattern.startsWith('.')) {
+                            return `**/${pattern}/**`;
+                        }
+                        // For patterns like `*.pyc` or `.DS_Store`, match them anywhere.
+                        if (!pattern.includes('/') && !pattern.includes('**')) {
+                             return `**/${pattern}`;
+                        }
+                        return pattern;
+                    });
+                },
+                filteredSyncFiles() {
+                    if (this.syncConfig.files.length === 0) {
+                        return [];
+                    }
+                    return this.syncConfig.files.filter(file =>
+                        !this.isExcluded(file.webkitRelativePath, this.processedExcludes)
+                    );
                 }
             },
             mounted() {
@@ -756,41 +778,34 @@
                 },
                 handleFileSelect(event) {
                     this.syncConfig.files = Array.from(event.target.files);
-                    toastr.info(`已选择 ${this.syncConfig.files.length} 个文件`);
+                    // The UI now reactively shows the filtered count, so a toast is less critical.
                 },
                 isExcluded(path, patterns) {
                     return patterns.some(pattern => minimatch(path, pattern, { dot: true }));
                 },
                 async syncCode() {
-                    if (this.syncConfig.files.length === 0) {
-                        toastr.warning('请先选择要同步的目录');
+                    const filesToSync = this.filteredSyncFiles;
+
+                    if (filesToSync.length === 0) {
+                        toastr.warning('没有需要同步的文件 (可能所有文件都被排除了)');
                         return;
                     }
 
                     this.isSyncing = true;
-                    this.syncResult = '开始同步...\n';
+                    
+                    // --- Enhanced Logging ---
+                    let logOutput = "--- 文件同步日志 ---\n";
+                    logOutput += `发现 ${filesToSync.length} 个文件需要同步:\n`;
+                    filesToSync.forEach(file => {
+                        logOutput += `[待同步] ${file.webkitRelativePath}\n`;
+                    });
+                    logOutput += "\n准备上传...\n";
+                    this.syncResult = logOutput;
+                    // --- End Enhanced Logging ---
 
                     const formData = new FormData();
-                    let includedFileCount = 0;
-
-                    for (const file of this.syncConfig.files) {
-                        const relativePath = file.webkitRelativePath;
-
-                        if (this.isExcluded(relativePath, this.syncConfig.defaultExcludes)) {
-                            this.syncResult += `[排除] ${relativePath}\n`;
-                            continue;
-                        }
-
-                        formData.append('files', file, relativePath);
-                        includedFileCount++;
-                    }
-                    
-                    this.syncResult += `\n总共 ${includedFileCount} 个文件将被同步。\n`;
-
-                    if (includedFileCount === 0) {
-                        this.syncResult += '没有文件需要同步。';
-                        this.isSyncing = false;
-                        return;
+                    for (const file of filesToSync) {
+                        formData.append('files', file, file.webkitRelativePath);
                     }
 
                     try {
@@ -800,14 +815,16 @@
                             },
                             onUploadProgress: (progressEvent) => {
                                 const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                                this.syncResult = `正在上传... ${percentCompleted}%`;
+                                // To avoid overwriting the pre-upload log, we append the progress.
+                                this.syncResult = logOutput + `\nUPLOADING... ${percentCompleted}%`;
                             }
                         });
-                        this.syncResult = response.data.message || '同步完成';
+                        this.syncResult = logOutput + "\n" + (response.data.message || '同步完成');
                         toastr.success('代码同步成功！');
                     } catch (error) {
-                        this.syncResult = '同步失败: ' + (error.response?.data?.error || error.message);
-                        toastr.error(this.syncResult);
+                        const errorMessage = '同步失败: ' + (error.response?.data?.error || error.message);
+                        this.syncResult = logOutput + "\n" + errorMessage;
+                        toastr.error(errorMessage);
                     } finally {
                         this.isSyncing = false;
                         this.syncConfig.files = []; // 清空已选择的文件
