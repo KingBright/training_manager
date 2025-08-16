@@ -7,6 +7,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.8/vue.global.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.0/axios.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/minimatch/3.0.4/minimatch.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
     <style>
@@ -490,18 +491,23 @@
                     
                     <form @submit.prevent="syncCode">
                         <div class="form-group">
-                            <label>源路径 (本地开发目录)</label>
-                            <input type="text" v-model="syncConfig.sourcePath" 
-                                   placeholder="/path/to/local/isaaclab" required>
+                            <label>源目录 (选择本地开发目录)</label>
+                            <input type="file" @change="handleFileSelect" webkitdirectory directory multiple class="form-control" style="padding: 10px; background-color: #f8f9fa; border: 2px dashed #dee2e6; cursor: pointer;">
+                            <small v-if="syncConfig.files.length > 0" style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                                <i class="fas fa-check-circle"></i> 已选择 {{ syncConfig.files.length }} 个文件。
+                            </small>
+                             <small v-else style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                                <i class="fas fa-folder-open"></i> 点击上方区域选择要同步的文件夹。
+                            </small>
                         </div>
-                        
+
                         <div class="form-group">
-                            <label>排除模式 (一行一个)</label>
-                            <textarea v-model="excludePatternsText" rows="4" 
-                                      placeholder="__pycache__&#10;*.pyc&#10;.git&#10;logs/&#10;outputs/"></textarea>
+                            <label>排除模式 (来自服务器配置)</label>
+                            <textarea :value="syncConfig.defaultExcludes.join('\n')" rows="4"
+                                      placeholder="从服务器加载排除模式..." readonly style="background: #e9ecef; opacity: 0.8;"></textarea>
                         </div>
                         
-                        <button type="submit" class="btn" :disabled="isSyncing">
+                        <button type="submit" class="btn" :disabled="isSyncing || syncConfig.files.length === 0">
                             <i class="fas fa-sync-alt" v-if="!isSyncing"></i>
                             <div class="loading" v-if="isSyncing"></div>
                             {{ isSyncing ? '同步中...' : '开始同步' }}
@@ -565,6 +571,7 @@
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/minimatch/3.0.4/minimatch.min.js"></script>
     <script>
         const { createApp } = Vue;
 
@@ -583,10 +590,9 @@
                         workingDir: '',
                     },
                     syncConfig: {
-                        sourcePath: '',
-                        excludePatterns: ['__pycache__', '*.pyc', '.git', 'logs/', 'outputs/']
+                        files: [],
+                        defaultExcludes: []
                     },
-                    excludePatternsText: '__pycache__\n*.pyc\n.git\nlogs/\noutputs/',
                     isCreating: false,
                     isSyncing: false,
                     syncResult: ''
@@ -601,6 +607,7 @@
                 this.loadTasks();
                 this.loadQueue();
                 this.loadCondaEnvs();
+                this.loadSyncConfig();
                 setInterval(() => {
                     this.loadTasks();
                     this.loadQueue();
@@ -632,6 +639,15 @@
                         }
                     } catch (error) {
                         console.error('加载Conda环境失败:', error);
+                    }
+                },
+                async loadSyncConfig() {
+                    try {
+                        const response = await axios.get('/api/sync/config');
+                        this.syncConfig.defaultExcludes = response.data.default_excludes || [];
+                    } catch (error) {
+                        console.error('加载同步配置失败:', error);
+                        toastr.error('加载同步排除规则失败');
                     }
                 },
                 async createTask() {
@@ -727,7 +743,6 @@
                 },
                 async copyCommand(command) {
                     try {
-                        // Create a temporary input element
                         const tempInput = document.createElement('input');
                         tempInput.value = command;
                         document.body.appendChild(tempInput);
@@ -739,28 +754,63 @@
                         toastr.error('复制失败: ' + err);
                     }
                 },
+                handleFileSelect(event) {
+                    this.syncConfig.files = Array.from(event.target.files);
+                    toastr.info(`已选择 ${this.syncConfig.files.length} 个文件`);
+                },
+                isExcluded(path, patterns) {
+                    return patterns.some(pattern => minimatch(path, pattern, { dot: true }));
+                },
                 async syncCode() {
-                    if (!this.syncConfig.sourcePath) return;
-                    
+                    if (this.syncConfig.files.length === 0) {
+                        toastr.warning('请先选择要同步的目录');
+                        return;
+                    }
+
                     this.isSyncing = true;
-                    this.syncResult = '';
-                    
-                    try {
-                        const syncData = {
-                            source_path: this.syncConfig.sourcePath,
-                            exclude_patterns: this.excludePatternsText.split('\n').filter(p => p.trim())
-                        };
-                        
-                        const response = await axios.post('/api/sync', syncData);
-                        this.syncResult = response.data.message || '同步完成';
-                        
-                        if (response.data.error) {
-                            this.syncResult = '同步失败: ' + response.data.error;
+                    this.syncResult = '开始同步...\n';
+
+                    const formData = new FormData();
+                    let includedFileCount = 0;
+
+                    for (const file of this.syncConfig.files) {
+                        const relativePath = file.webkitRelativePath;
+
+                        if (this.isExcluded(relativePath, this.syncConfig.defaultExcludes)) {
+                            this.syncResult += `[排除] ${relativePath}\n`;
+                            continue;
                         }
+
+                        formData.append('files', file, relativePath);
+                        includedFileCount++;
+                    }
+                    
+                    this.syncResult += `\n总共 ${includedFileCount} 个文件将被同步。\n`;
+
+                    if (includedFileCount === 0) {
+                        this.syncResult += '没有文件需要同步。';
+                        this.isSyncing = false;
+                        return;
+                    }
+
+                    try {
+                        const response = await axios.post('/api/sync', formData, {
+                            headers: {
+                                'Content-Type': 'multipart/form-data'
+                            },
+                            onUploadProgress: (progressEvent) => {
+                                const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                                this.syncResult = `正在上传... ${percentCompleted}%`;
+                            }
+                        });
+                        this.syncResult = response.data.message || '同步完成';
+                        toastr.success('代码同步成功！');
                     } catch (error) {
                         this.syncResult = '同步失败: ' + (error.response?.data?.error || error.message);
+                        toastr.error(this.syncResult);
                     } finally {
                         this.isSyncing = false;
+                        this.syncConfig.files = []; // 清空已选择的文件
                     }
                 },
                 async openTensorboard(taskId) {

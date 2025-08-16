@@ -8,14 +8,17 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{migrate::MigrateDatabase, Sqlite, SqlitePool};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::{
+    fs,
     process::{Child, Command},
     sync::{Mutex, RwLock},
 };
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::{info, error};
 use uuid::Uuid;
+use axum_extra::extract::{multipart::MultipartError, Multipart};
+use glob::Pattern;
 
 mod config; // Added
 
@@ -52,12 +55,6 @@ pub struct CreateTaskRequest {
     pub working_dir: Option<String>,  // 工作目录
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SyncRequest {
-    pub source_path: String,
-    pub exclude_patterns: Option<Vec<String>>,
-}
-
 // 应用状态
 #[derive(Clone)]
 pub struct AppState {
@@ -87,15 +84,27 @@ pub enum AppError {
     TaskNotFound(String),
     #[error("Task already running")]
     TaskAlreadyRunning,
+    #[error("Multipart error: {0}")]
+    Multipart(#[from] MultipartError),
 }
 
 impl axum::response::IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, error_message) = match self {
-            AppError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
-            AppError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "IO error"),
-            AppError::TaskNotFound(_) => (StatusCode::NOT_FOUND, "Task not found"),
-            AppError::TaskAlreadyRunning => (StatusCode::CONFLICT, "Task already running"),
+            AppError::Database(err) => {
+                error!("Database error: {}", err);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Database error".to_string())
+            }
+            AppError::Io(err) => {
+                error!("IO error: {}", err);
+                (StatusCode::INTERNAL_SERVER_ERROR, "IO error".to_string())
+            }
+            AppError::TaskNotFound(id) => (StatusCode::NOT_FOUND, format!("Task not found: {}", id)),
+            AppError::TaskAlreadyRunning => (StatusCode::CONFLICT, "Task already running".to_string()),
+            AppError::Multipart(err) => {
+                error!("Multipart error: {}", err);
+                (StatusCode::BAD_REQUEST, format!("Multipart form error: {}", err))
+            }
         };
         
         (status, Json(serde_json::json!({"error": error_message}))).into_response()
@@ -142,6 +151,7 @@ async fn main() -> Result<()> {
         .route("/api/conda/envs", get(get_conda_envs_handler))
         .route("/api/queue", get(get_queue_handler))
         .route("/api/sync", post(sync_code_handler))
+        .route("/api/sync/config", get(get_sync_config_handler))
         // .route("/api/tensorboard/{id}", get(get_tensorboard_handler))
         // .route("/api/download/{id}/onnx", get(download_onnx_handler))
         .nest_service("/static", ServeDir::new("static"))
@@ -373,41 +383,81 @@ async fn get_queue_handler(State(state): State<AppState>) -> Json<Vec<String>> {
     Json(queue.clone())
 }
 
+#[derive(Serialize)]
+pub struct SyncConfigResponse {
+    pub default_excludes: Vec<String>,
+}
+
+async fn get_sync_config_handler(
+    State(state): State<AppState>,
+) -> Result<Json<SyncConfigResponse>, AppError> {
+    let response = SyncConfigResponse {
+        default_excludes: state.config.sync.default_excludes.clone(),
+    };
+    Ok(Json(response))
+}
+
 async fn sync_code_handler(
     State(state): State<AppState>,
-    Json(request): Json<SyncRequest>,
+    mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // 检查是否配置了同步目标路径
-    let target_path = match &state.config.sync.target_path.to_string_lossy() { // Updated
-        path if !path.is_empty() => path.to_string(),
-        _ => {
-            return Ok(Json(serde_json::json!({"error": "代码同步未配置，请在配置文件中设置sync_target_path"})))
-        }
-    };
-    
-    // 实现rsync同步
-    let mut cmd = Command::new("rsync");
-    cmd.arg("-avz")
-        .arg("--delete")
-        .arg("--progress");
-    
-    if let Some(excludes) = request.exclude_patterns {
-        for pattern in excludes {
-            cmd.arg(format!("--exclude={}", pattern));
-        }
+    // 1. Get target path from config
+    let target_path = PathBuf::from(state.config.sync.target_path.to_string_lossy().to_string());
+    if target_path.to_string_lossy().is_empty() {
+        error!("Sync target path is not configured.");
+        return Ok(Json(serde_json::json!({"error": "代码同步目标路径未配置"})));
     }
     
-    cmd.arg(format!("{}/", request.source_path))
-        .arg(target_path);
-    
-    let output = cmd.output().await?;
-    
-    if output.status.success() {
-        Ok(Json(serde_json::json!({"message": "同步完成"})))
-    } else {
-        let error = String::from_utf8_lossy(&output.stderr);
-        Ok(Json(serde_json::json!({"error": error})))
+    // 2. Compile exclusion patterns
+    let exclude_patterns: Vec<Pattern> = state.config.sync.default_excludes
+        .iter()
+        .map(|p| Pattern::new(p).expect("Invalid glob pattern in config"))
+        .collect();
+
+    let mut files_written = 0;
+    let mut files_excluded = 0;
+
+    // 3. Process multipart stream
+    while let Some(field) = multipart.next_field().await? {
+        if let Some(relative_path_str) = field.name().map(|s| s.to_string()) {
+            if relative_path_str.is_empty() {
+                continue;
+            }
+
+            // Security: clean the path to prevent directory traversal
+            let relative_path = PathBuf::from(relative_path_str)
+                .components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .collect::<PathBuf>();
+
+            let data = field.bytes().await?;
+
+            // 4. Check against exclusion patterns
+            let is_excluded = exclude_patterns.iter().any(|p| p.matches_path(&relative_path));
+
+            if is_excluded {
+                files_excluded += 1;
+                info!("Excluding file: {}", relative_path.display());
+                continue;
+            }
+
+            // 5. Write file to disk
+            let dest_path = target_path.join(&relative_path);
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            fs::write(&dest_path, &data).await?;
+            files_written += 1;
+            info!("Synced file: {}", dest_path.display());
+        }
     }
+
+    let message = format!(
+        "同步完成。\n成功写入 {} 个文件。\n排除了 {} 个文件。",
+        files_written, files_excluded
+    );
+
+    Ok(Json(serde_json::json!({ "message": message })))
 }
 
 // TaskManager

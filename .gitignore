@@ -1,0 +1,19 @@
+# Rust
+target/
+cargo.lock
+
+# General
+.DS_Store
+*.log
+
+# Database
+*.db
+*.db-journal
+migrations/
+isaaclab_manager.db-journal
+isaaclab-manager.db-wal
+isaaclab-manager.db-shm
+
+# IDE
+.vscode/
+.idea/
