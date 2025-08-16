@@ -7,7 +7,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.8/vue.global.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.0/axios.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-    <script src="https://unpkg.com/minimatch@3.0.4/browser.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
     <style>
@@ -602,26 +601,12 @@
                 runningTasks() {
                     return this.tasks.filter(task => task.status === 'running');
                 },
-                processedExcludes() {
-                    return (this.syncConfig.defaultExcludes || []).map(pattern => {
-                        // If it's a simple name without glob chars, treat it as a directory pattern.
-                        // This handles cases like `__pycache__` or `.git`.
-                        if (!pattern.includes('*') && !pattern.startsWith('.')) {
-                            return `**/${pattern}/**`;
-                        }
-                        // For patterns like `*.pyc` or `.DS_Store`, match them anywhere.
-                        if (!pattern.includes('/') && !pattern.includes('**')) {
-                             return `**/${pattern}`;
-                        }
-                        return pattern;
-                    });
-                },
                 filteredSyncFiles() {
                     if (this.syncConfig.files.length === 0) {
                         return [];
                     }
                     return this.syncConfig.files.filter(file =>
-                        !this.isExcluded(file.webkitRelativePath, this.processedExcludes)
+                        !this.isExcluded(file.webkitRelativePath, this.syncConfig.defaultExcludes)
                     );
                 }
             },
@@ -778,10 +763,29 @@
                 },
                 handleFileSelect(event) {
                     this.syncConfig.files = Array.from(event.target.files);
-                    // The UI now reactively shows the filtered count, so a toast is less critical.
                 },
                 isExcluded(path, patterns) {
-                    return patterns.some(pattern => minimatch(path, pattern, { dot: true }));
+                    const pathSegments = path.split('/');
+                    for (const pattern of patterns) {
+                        if (pattern.startsWith('*.')) {
+                            // Handles *.pyc, *.onnx etc.
+                            if (path.endsWith(pattern.substring(1))) {
+                                return true;
+                            }
+                        } else if (pattern.endsWith('/')) {
+                            // Handles logs/, __pycache__/ etc.
+                            const dirName = pattern.slice(0, -1);
+                            if (pathSegments.includes(dirName)) {
+                                return true;
+                            }
+                        } else {
+                            // Handles .git, .vscode etc.
+                             if (pathSegments.includes(pattern)) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
                 },
                 async syncCode() {
                     const filesToSync = this.filteredSyncFiles;
