@@ -1,0 +1,1 @@
+ALTER TABLE tasks ADD COLUMN working_dir TEXT;

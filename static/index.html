@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IsaacLab 训练管理器</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.8/vue.global.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.0/axios.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1rem;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.15);
+        }
+
+        .card h2 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 12px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.8);
+        }
+
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a52);
+        }
+
+        .btn-danger:hover {
+            box-shadow: 0 10px 25px rgba(255, 107, 107, 0.3);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #6c757d, #545b62);
+        }
+
+        .task-list {
+            grid-column: 1 / -1;
+        }
+
+        .task-item {
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .task-item:hover {
+            background: rgba(255, 255, 255, 0.9);
+            transform: translateX(5px);
+        }
+
+        .task-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .task-info {
+            flex: 1;
+        }
+
+        .task-name {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .task-command {
+            color: #666;
+            font-family: 'Monaco', 'Consolas', monospace;
+            background: rgba(0, 0, 0, 0.05);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        .task-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-queued {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-running {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-stopped {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .queue-list {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .queue-item {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .log-viewer {
+            background: #1a1a1a;
+            color: #00ff00;
+            padding: 20px;
+            border-radius: 12px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            margin-top: 20px;
+        }
+
+        .tabs {
+            display: flex;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 5px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        .tab.active {
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+        }
+
+        .tab:not(.active) {
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+            
+            .task-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+            }
+            
+            .task-actions {
+                align-self: stretch;
+            }
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="container">
+            <div class="header">
+                <h1><i class="fas fa-robot"></i> IsaacLab 训练管理器</h1>
+                <p>现代化的强化学习训练任务管理平台</p>
+            </div>
+
+            <div class="tabs">
+                <div class="tab" :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">
+                    <i class="fas fa-tasks"></i> 任务管理
+                </div>
+                <div class="tab" :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">
+                    <i class="fas fa-sync-alt"></i> 代码同步
+                </div>
+                <div class="tab" :class="{ active: activeTab === 'monitor' }" @click="activeTab = 'monitor'">
+                    <i class="fas fa-chart-line"></i> 监控面板
+                </div>
+            </div>
+
+            <!-- 任务管理面板 -->
+            <div v-show="activeTab === 'tasks'">
+                <div class="dashboard">
+                    <!-- 创建新任务 -->
+                    <div class="card">
+                        <h2><i class="fas fa-plus-circle"></i> 创建新任务</h2>
+                        <form @submit.prevent="createTask">
+                            <div class="form-group">
+                                <label>任务命令</label>
+                                <input type="text" v-model="newTask.command" 
+                                       placeholder="例: python train.py --task=G1-Walk-v0 --headless"
+                                       required>
+                                <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                                    <i class="fas fa-info-circle"></i> 输入完整的python训练命令
+                                </small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>Conda 环境</label>
+                                <select v-model="newTask.condaEnv" required>
+                                    <option value="">选择环境...</option>
+                                    <option v-for="env in condaEnvs" :key="env" :value="env">
+                                        {{ env }}
+                                    </option>
+                                </select>
+                                <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                                    <i class="fas fa-info-circle"></i> 选择运行训练的conda环境
+                                </small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label>工作目录 (可选)</label>
+                                <input type="text" v-model="newTask.workingDir" 
+                                       placeholder="留空使用默认目录">
+                                <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                                    <i class="fas fa-info-circle"></i> 命令执行的工作目录
+                                </small>
+                            </div>
+                            
+                            <button type="submit" class="btn" :disabled="isCreating">
+                                <i class="fas fa-play" v-if="!isCreating"></i>
+                                <div class="loading" v-if="isCreating"></div>
+                                {{ isCreating ? '创建中...' : '创建任务' }}
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- 任务队列 -->
+                    <div class="card">
+                        <h2><i class="fas fa-list"></i> 任务队列</h2>
+                        <div v-if="queue.length === 0" style="text-align: center; color: #666; padding: 20px;">
+                            <i class="fas fa-inbox"></i><br>
+                            暂无排队任务
+                        </div>
+                        <div v-else class="queue-list">
+                            <div v-for="(taskId, index) in queue" :key="taskId" class="queue-item">
+                                <span>{{ index + 1 }}. {{ getTaskName(taskId) }}</span>
+                                <span class="status-badge status-queued">排队中</span>
+                            </div>
+                        </div>
+                        <button @click="refreshQueue" class="btn btn-secondary" style="margin-top: 15px;">
+                            <i class="fas fa-refresh"></i> 刷新队列
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 任务列表 -->
+                <div class="card task-list">
+                    <h2><i class="fas fa-history"></i> 任务历史</h2>
+                    <div v-if="tasks.length === 0" style="text-align: center; color: #666; padding: 40px;">
+                        <i class="fas fa-robot" style="font-size: 3rem; opacity: 0.3; margin-bottom: 20px;"></i><br>
+                        还没有任何训练任务<br>
+                        <small>创建你的第一个IsaacLab训练任务吧！</small>
+                    </div>
+                    <div v-for="task in tasks" :key="task.id" class="task-item">
+                        <div class="task-header">
+                            <div class="task-info">
+                                <div class="task-name">{{ task.name }}</div>
+                                <div class="task-command">{{ task.command }}</div>
+                                <div style="margin-top: 8px;">
+                                    <span style="background: rgba(102, 126, 234, 0.1); color: #667eea; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;">
+                                        <i class="fas fa-layer-group"></i> {{ task.conda_env || 'default' }}
+                                    </span>
+                                </div>
+                                <div style="margin-top: 10px; font-size: 12px; color: #888;">
+                                    创建时间: {{ formatDate(task.created_at) }}
+                                    <span v-if="task.started_at"> | 开始时间: {{ formatDate(task.started_at) }}</span>
+                                    <span v-if="task.finished_at"> | 结束时间: {{ formatDate(task.finished_at) }}</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 15px;">
+                                <span class="status-badge" :class="'status-' + task.status.toLowerCase()">
+                                    {{ getStatusText(task.status) }}
+                                </span>
+                                <div class="task-actions">
+                                    <button @click="viewLogs(task.id)" class="btn btn-secondary">
+                                        <i class="fas fa-file-alt"></i> 日志
+                                    </button>
+                                    <button v-if="task.status === 'running'" @click="viewTensorboard(task.id)" class="btn">
+                                        <i class="fas fa-chart-line"></i> TensorBoard
+                                    </button>
+                                    <button v-if="task.status === 'completed'" @click="downloadOnnx(task.id)" class="btn">
+                                        <i class="fas fa-download"></i> 下载ONNX
+                                    </button>
+                                    <button @click="copyCommand(task.command)" class="btn btn-secondary">
+                                        <i class="fas fa-copy"></i> 复制命令
+                                    </button>
+                                    <button v-if="task.status === 'running'" @click="stopTask(task.id)" class="btn btn-danger">
+                                        <i class="fas fa-stop"></i> 停止
+                                    </button>
+                                    <button @click="deleteTask(task.id)" class="btn btn-danger">
+                                        <i class="fas fa-trash"></i> 删除
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 日志查看器 -->
+                        <div v-if="showLogs[task.id]" class="log-viewer">
+                            <div style="margin-bottom: 10px; color: #00ff00;">
+                                <i class="fas fa-terminal"></i> 任务日志 - {{ task.name }}
+                            </div>
+                            <div>{{ logs[task.id] || '正在加载日志...' }}</div>
+                            <div style="text-align: center; margin-top: 15px;">
+                                <button @click="refreshLogs(task.id)" class="btn btn-secondary">
+                                    <i class="fas fa-refresh"></i> 刷新日志
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 代码同步面板 -->
+            <div v-show="activeTab === 'sync'">
+                <div class="card">
+                    <h2><i class="fas fa-sync-alt"></i> 代码同步</h2>
+                    <p style="margin-bottom: 20px; color: #666;">
+                        使用rsync将本地开发环境的代码高效同步到服务器
+                    </p>
+                    
+                    <form @submit.prevent="syncCode">
+                        <div class="form-group">
+                            <label>源路径 (本地开发目录)</label>
+                            <input type="text" v-model="syncConfig.sourcePath" 
+                                   placeholder="/path/to/local/isaaclab" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>排除模式 (一行一个)</label>
+                            <textarea v-model="excludePatternsText" rows="4" 
+                                      placeholder="__pycache__&#10;*.pyc&#10;.git&#10;logs/&#10;outputs/"></textarea>
+                        </div>
+                        
+                        <button type="submit" class="btn" :disabled="isSyncing">
+                            <i class="fas fa-sync-alt" v-if="!isSyncing"></i>
+                            <div class="loading" v-if="isSyncing"></div>
+                            {{ isSyncing ? '同步中...' : '开始同步' }}
+                        </button>
+                    </form>
+                    
+                    <div v-if="syncResult" class="log-viewer" style="margin-top: 20px;">
+                        <div style="color: #00ff00; margin-bottom: 10px;">
+                            <i class="fas fa-terminal"></i> 同步结果
+                        </div>
+                        <div>{{ syncResult }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 监控面板 -->
+            <div v-show="activeTab === 'monitor'">
+                <div class="dashboard">
+                    <div class="card">
+                        <h2><i class="fas fa-tachometer-alt"></i> 系统状态</h2>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
+                            <div style="text-align: center;">
+                                <div style="font-size: 2rem; font-weight: bold; color: #667eea;">{{ tasks.filter(t => t.status === 'running').length }}</div>
+                                <div style="color: #666;">运行中任务</div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 2rem; font-weight: bold; color: #28a745;">{{ tasks.filter(t => t.status === 'completed').length }}</div>
+                                <div style="color: #666;">已完成任务</div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 2rem; font-weight: bold; color: #ffc107;">{{ queue.length }}</div>
+                                <div style="color: #666;">排队任务</div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 2rem; font-weight: bold; color: #dc3545;">{{ tasks.filter(t => t.status === 'failed').length }}</div>
+                                <div style="color: #666;">失败任务</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <h2><i class="fas fa-chart-line"></i> TensorBoard 链接</h2>
+                        <div v-if="runningTasks.length === 0" style="text-align: center; color: #666; padding: 20px;">
+                            <i class="fas fa-chart-line"></i><br>
+                            暂无运行中的任务
+                        </div>
+                        <div v-for="task in runningTasks" :key="task.id" style="margin-bottom: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.05); padding: 15px; border-radius: 10px;">
+                                <div>
+                                    <strong>{{ task.name }}</strong>
+                                    <div style="font-size: 12px; color: #666;">{{ task.id }}</div>
+                                </div>
+                                <button @click="openTensorboard(task.id)" class="btn">
+                                    <i class="fas fa-external-link-alt"></i> 打开 TensorBoard
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    activeTab: 'tasks',
+                    tasks: [],
+                    queue: [],
+                    condaEnvs: [],
+                    showLogs: {},
+                    logs: {},
+                    newTask: {
+                        command: '',
+                        condaEnv: '',
+                        workingDir: '',
+                    },
+                    syncConfig: {
+                        sourcePath: '',
+                        excludePatterns: ['__pycache__', '*.pyc', '.git', 'logs/', 'outputs/']
+                    },
+                    excludePatternsText: '__pycache__\n*.pyc\n.git\nlogs/\noutputs/',
+                    isCreating: false,
+                    isSyncing: false,
+                    syncResult: ''
+                }
+            },
+            computed: {
+                runningTasks() {
+                    return this.tasks.filter(task => task.status === 'running');
+                }
+            },
+            mounted() {
+                this.loadTasks();
+                this.loadQueue();
+                this.loadCondaEnvs();
+                setInterval(() => {
+                    this.loadTasks();
+                    this.loadQueue();
+                }, 5000);
+            },
+            methods: {
+                async loadTasks() {
+                    try {
+                        const response = await axios.get('/api/tasks');
+                        this.tasks = response.data;
+                    } catch (error) {
+                        console.error('加载任务失败:', error);
+                    }
+                },
+                async loadQueue() {
+                    try {
+                        const response = await axios.get('/api/queue');
+                        this.queue = response.data;
+                    } catch (error) {
+                        console.error('加载队列失败:', error);
+                    }
+                },
+                async loadCondaEnvs() {
+                    try {
+                        const response = await axios.get('/api/conda/envs');
+                        this.condaEnvs = response.data;
+                        if (this.condaEnvs.length > 0) {
+                            this.newTask.condaEnv = this.condaEnvs.find(env => env.includes('isaaclab')) || this.condaEnvs[0];
+                        }
+                    } catch (error) {
+                        console.error('加载Conda环境失败:', error);
+                    }
+                },
+                async createTask() {
+                    if (!this.newTask.command || !this.newTask.condaEnv) return;
+                    
+                    this.isCreating = true;
+                    try {
+                        const taskData = {
+                            command: this.newTask.command,
+                            conda_env: this.newTask.condaEnv,
+                            working_dir: this.newTask.workingDir || null
+                        };
+                        
+                        await axios.post('/api/tasks', taskData);
+                        
+                        this.newTask = {
+                            command: '',
+                            condaEnv: this.condaEnvs.find(env => env.includes('isaaclab')) || this.condaEnvs[0] || '',
+                            workingDir: '',
+                        };
+                        
+                        this.loadTasks();
+                        this.loadQueue();
+                        
+                        toastr.success('任务创建成功！');
+                    } catch (error) {
+                        toastr.error('创建任务失败: ' + (error.response?.data?.error || error.message));
+                    } finally {
+                        this.isCreating = false;
+                    }
+                },
+                async stopTask(taskId) {
+                    try {
+                        await axios.post(`/api/tasks/${taskId}/stop`);
+                        this.loadTasks();
+                        toastr.success('任务已停止');
+                    } catch (error) {
+                        toastr.error('停止任务失败: ' + (error.response?.data?.error || error.message));
+                    }
+                },
+                async deleteTask(taskId) {
+                    try {
+                        await axios.delete(`/api/tasks/${taskId}`);
+                        this.loadTasks();
+                        toastr.success('任务已删除');
+                    } catch (error) {
+                        toastr.error('删除任务失败: ' + (error.response?.data?.error || error.message));
+                    }
+                },
+                async viewLogs(taskId) {
+                    this.showLogs[taskId] = !this.showLogs[taskId];
+                    if (this.showLogs[taskId]) {
+                        await this.refreshLogs(taskId);
+                    }
+                },
+                async refreshLogs(taskId) {
+                    try {
+                        const response = await axios.get(`/api/tasks/${taskId}/logs`);
+                        this.logs[taskId] = response.data;
+                    } catch (error) {
+                        this.logs[taskId] = '获取日志失败: ' + error.message;
+                    }
+                },
+                async viewTensorboard(taskId) {
+                    try {
+                        const response = await axios.get(`/api/tensorboard/${taskId}`);
+                        if (response.data.url) {
+                            window.open(response.data.url, '_blank');
+                        } else {
+                            toastr.info('TensorBoard暂不可用');
+                        }
+                    } catch (error) {
+                        toastr.error('打开TensorBoard失败: ' + error.message);
+                    }
+                },
+                async downloadOnnx(taskId) {
+                    try {
+                        const response = await axios.get(`/api/download/${taskId}/onnx`, {
+                            responseType: 'blob'
+                        });
+                        
+                        const url = window.URL.createObjectURL(new Blob([response.data]));
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.setAttribute('download', `${taskId}_policy.onnx`);
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                        window.URL.revokeObjectURL(url);
+                    } catch (error) {
+                        toastr.error('下载ONNX文件失败: ' + error.message);
+                    }
+                },
+                async copyCommand(command) {
+                    try {
+                        // Create a temporary input element
+                        const tempInput = document.createElement('input');
+                        tempInput.value = command;
+                        document.body.appendChild(tempInput);
+                        tempInput.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(tempInput);
+                        toastr.success('命令已复制到剪贴板！');
+                    } catch (err) {
+                        toastr.error('复制失败: ' + err);
+                    }
+                },
+                async syncCode() {
+                    if (!this.syncConfig.sourcePath) return;
+                    
+                    this.isSyncing = true;
+                    this.syncResult = '';
+                    
+                    try {
+                        const syncData = {
+                            source_path: this.syncConfig.sourcePath,
+                            exclude_patterns: this.excludePatternsText.split('\n').filter(p => p.trim())
+                        };
+                        
+                        const response = await axios.post('/api/sync', syncData);
+                        this.syncResult = response.data.message || '同步完成';
+                        
+                        if (response.data.error) {
+                            this.syncResult = '同步失败: ' + response.data.error;
+                        }
+                    } catch (error) {
+                        this.syncResult = '同步失败: ' + (error.response?.data?.error || error.message);
+                    } finally {
+                        this.isSyncing = false;
+                    }
+                },
+                async openTensorboard(taskId) {
+                    await this.viewTensorboard(taskId);
+                },
+                refreshQueue() {
+                    this.loadQueue();
+                },
+                getTaskName(taskId) {
+                    const task = this.tasks.find(t => t.id === taskId);
+                    return task ? task.name : taskId.substring(0, 8);
+                },
+                getStatusText(status) {
+                    const statusMap = {
+                        'queued': '排队中',
+                        'running': '运行中',
+                        'completed': '已完成',
+                        'failed': '失败',
+                        'stopped': '已停止'
+                    };
+                    return statusMap[status.toLowerCase()] || status;
+                },
+                formatDate(dateString) {
+                    if (!dateString) return '';
+                    const date = new Date(dateString);
+                    return date.toLocaleString('zh-CN');
+                }
+            }
+        }).mount('#app');
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/clipboard.js/2.0.11/clipboard.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <script>
+        toastr.options = {
+            "closeButton": true,
+            "debug": false,
+            "newestOnTop": true,
+            "progressBar": true,
+            "positionClass": "toast-top-right",
+            "preventDuplicates": false,
+            "onclick": null,
+            "showDuration": "300",
+            "hideDuration": "1000",
+            "timeOut": "5000",
+            "extendedTimeOut": "1000",
+            "showEasing": "swing",
+            "hideEasing": "linear",
+            "showMethod": "fadeIn",
+            "hideMethod": "fadeOut"
+        };
+    </script>
+</body>
+</html>

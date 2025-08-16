@@ -1,0 +1,54 @@
+[package]
+name = "isaaclab-manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web框架
+axum = "0.8"
+tokio = { version = "1.0", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 数据库
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+
+# 进程管理
+tokio-process = "0.2"
+nix = "0.30"
+
+# 文件同步
+rsync = "0.1.2"
+
+# Conda环境管理
+which = "8.0"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "2.0"
+
+# UUID生成
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+# 文件监控
+notify = "8.2"
+
+# HTTP客户端
+reqwest = "0.12"
+
+# 模板引擎
+askama = "0.14"
+askama_axum = "0.4"
+sysinfo = "0.36.1"
+toml = "0.9.5"
