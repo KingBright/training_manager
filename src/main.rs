@@ -324,7 +324,7 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
                         if file_count % 1000 == 0 {
                             info!(file_count, "Hashed {} files so far...", file_count);
                         }
-                        tracing::trace!(?path, "Hashing file");
+                        info!(?path, "Hashing file");
                         if let Ok(relative_path) = path.strip_prefix(&target_path_for_closure) {
                             match File::open(path) {
                                 Ok(mut file) => {
