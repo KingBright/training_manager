@@ -296,14 +296,14 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
 
         let filtered_walker = walker.filter_entry(|e| {
             let path = e.path();
-            if path == target_path_for_closure {
-                return true;
-            }
-
             let relative_path = match path.strip_prefix(&target_path_for_closure) {
                 Ok(p) => p,
-                Err(_) => return true,
+                Err(_) => return false, // If we can't get a relative path, exclude it.
             };
+
+            if relative_path.as_os_str().is_empty() {
+                return true; // Always include the root directory itself.
+            }
 
             let excluded = exclude_patterns.iter().any(|p| p.matches_path(relative_path));
             if excluded {
@@ -370,7 +370,7 @@ async fn sync_code_handler(
     
     let mut files_written = 0;
     while let Some(field) = multipart.next_field().await? {
-        if let Some(relative_path_str) = field.name() {
+        if let Some(relative_path_str) = field.file_name() {
             let relative_path = PathBuf::from(relative_path_str)
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))

@@ -570,7 +570,7 @@
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/minimatch/3.0.4/minimatch.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/minimatch@3.0.4/minimatch.min.js"></script>
     <script>
         const { createApp } = Vue;
 
@@ -765,27 +765,9 @@
                     this.syncConfig.files = Array.from(event.target.files);
                 },
                 isExcluded(path, patterns) {
-                    const pathSegments = path.split('/');
-                    for (const pattern of patterns) {
-                        if (pattern.startsWith('*.')) {
-                            // Handles *.pyc, *.onnx etc.
-                            if (path.endsWith(pattern.substring(1))) {
-                                return true;
-                            }
-                        } else if (pattern.endsWith('/')) {
-                            // Handles logs/, __pycache__/ etc.
-                            const dirName = pattern.slice(0, -1);
-                            if (pathSegments.includes(dirName)) {
-                                return true;
-                            }
-                        } else {
-                            // Handles .git, .vscode etc.
-                             if (pathSegments.includes(pattern)) {
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
+                    // Use minimatch for robust glob pattern matching.
+                    // The { dot: true } option ensures that patterns match files starting with a dot (e.g., .git)
+                    return patterns.some(pattern => minimatch(path, pattern, { dot: true }));
                 },
                 async getFileHash(file) {
                     const buffer = await file.arrayBuffer();
