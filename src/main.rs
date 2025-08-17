@@ -272,15 +272,21 @@ async fn get_sync_config_handler(State(state): State<AppState>) -> Json<SyncConf
 }
 
 async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json<HashMap<String, String>>, AppError> {
+    info!("Received request for sync manifest.");
     let target_path = PathBuf::from(&state.config.sync.target_path);
+    info!(?target_path, "Target path for sync manifest.");
+
     if !target_path.exists() || !target_path.is_dir() {
+        error!(?target_path, "Target path does not exist or is not a directory.");
         return Ok(Json(HashMap::new()));
     }
 
     let excludes = state.config.sync.default_excludes.clone();
+    info!(?excludes, "Using exclusion patterns.");
     let target_path_for_closure = target_path.clone();
 
     let manifest = tokio::task::spawn_blocking(move || {
+        info!("Starting blocking task for manifest generation.");
         let exclude_patterns: Vec<glob::Pattern> = excludes
             .iter()
             .map(|s| glob::Pattern::new(s).expect("Invalid glob pattern in config"))
@@ -299,13 +305,23 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
                 Err(_) => return true,
             };
 
-            !exclude_patterns.iter().any(|p| p.matches_path(relative_path))
+            let excluded = exclude_patterns.iter().any(|p| p.matches_path(relative_path));
+            if excluded {
+                tracing::debug!(?path, "Excluding path");
+            }
+            !excluded
         });
 
         let mut manifest: HashMap<String, String> = HashMap::new();
+        let mut file_count: u64 = 0;
         for entry in filtered_walker.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_file() {
+                file_count += 1;
+                if file_count % 1000 == 0 {
+                    info!(file_count, "Hashed {} files so far...", file_count);
+                }
+                tracing::trace!(?path, "Hashing file");
                 if let Ok(relative_path) = path.strip_prefix(&target_path_for_closure) {
                     if let Ok(mut file) = File::open(path) {
                         let mut hasher = Sha256::new();
@@ -317,9 +333,14 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
                 }
             }
         }
+        info!(file_count, "Finished hashing all files.");
         manifest
-    }).await.map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    }).await.map_err(|e| {
+        error!("Manifest generation task failed: {}", e);
+        AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+    })?;
 
+    info!(manifest_size = manifest.len(), "Manifest generation complete. Returning manifest.");
     Ok(Json(manifest))
 }
 
