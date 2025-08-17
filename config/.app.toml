@@ -1,0 +1,36 @@
+[server]
+host = "0.0.0.0"
+port = 6006
+
+[isaaclab]
+path = "/home/ecs-user"
+python_executable = "python"
+conda_path = "/home/ecs-user/anaconda3" # Placeholder, please verify this path
+default_conda_env = "env_isaaclab"
+
+[storage]
+output_path = "/home/ecs-user/outputs"
+log_path = "/home/ecs-user/logs"
+database_url = "sqlite:./isaaclab_manager.db"
+
+[tensorboard]
+base_port = 6007
+max_instances = 10
+
+[sync]
+target_path = "/home/ecs-user"
+default_excludes = [
+    "__pycache__",
+    "*.pyc",
+    ".git",
+    "logs/",
+    "outputs/",
+    ".vscode/",
+    "*.tmp",
+]
+
+[tasks]
+max_concurrent = 1
+default_headless = true
+timeout_seconds = 86400
+working_directory = "/home/ecs-user"
