@@ -276,14 +276,37 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
     if !target_path.exists() || !target_path.is_dir() {
         return Ok(Json(HashMap::new()));
     }
-    let target_path_str = target_path.to_string_lossy().to_string();
+
+    let excludes = state.config.sync.default_excludes.clone();
+    let target_path_for_closure = target_path.clone();
 
     let manifest = tokio::task::spawn_blocking(move || {
+        let exclude_patterns: Vec<glob::Pattern> = excludes
+            .iter()
+            .map(|s| glob::Pattern::new(s).expect("Invalid glob pattern in config"))
+            .collect();
+
+        let walker = WalkDir::new(&target_path_for_closure).into_iter();
+
+        let filtered_walker = walker.filter_entry(|e| {
+            let path = e.path();
+            if path == target_path_for_closure {
+                return true;
+            }
+
+            let relative_path = match path.strip_prefix(&target_path_for_closure) {
+                Ok(p) => p,
+                Err(_) => return true,
+            };
+
+            !exclude_patterns.iter().any(|p| p.matches_path(relative_path))
+        });
+
         let mut manifest: HashMap<String, String> = HashMap::new();
-        for entry in WalkDir::new(&target_path_str).into_iter().filter_map(Result::ok) {
+        for entry in filtered_walker.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_file() {
-                if let Ok(relative_path) = path.strip_prefix(&target_path_str) {
+                if let Ok(relative_path) = path.strip_prefix(&target_path_for_closure) {
                     if let Ok(mut file) = File::open(path) {
                         let mut hasher = Sha256::new();
                         if std::io::copy(&mut file, &mut hasher).is_ok() {
