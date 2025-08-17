@@ -11,8 +11,7 @@ cargo.lock
 *.db-journal
 migrations/
 isaaclab_manager.db-journal
-isaaclab-manager.db-wal
-isaaclab-manager.db-shm
+isaaclab_manager.db-shm
 
 # IDE
 .vscode/
