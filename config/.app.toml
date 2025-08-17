@@ -18,7 +18,7 @@ base_port = 6006
 max_instances = 10
 
 [sync]
-target_path = "/home/ywkj/moves"
+target_path = "/home/ywkj"
 default_excludes = [
     "__pycache__",
     "*.pyc",
@@ -27,6 +27,7 @@ default_excludes = [
     "outputs/",
     ".vscode/",
     "*.tmp",
+    "target/",
 ]
 
 [tasks]
