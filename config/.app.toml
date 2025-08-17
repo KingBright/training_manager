@@ -27,6 +27,7 @@ default_excludes = [
     "outputs/",
     ".vscode/",
     "*.tmp",
+    ".DS_Store",
 ]
 
 [tasks]
