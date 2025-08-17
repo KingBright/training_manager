@@ -787,51 +787,81 @@
                     }
                     return false;
                 },
+                async getFileHash(file) {
+                    const buffer = await file.arrayBuffer();
+                    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+                    const hashArray = Array.from(new Uint8Array(hashBuffer));
+                    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                },
                 async syncCode() {
-                    const filesToSync = this.filteredSyncFiles;
-
-                    if (filesToSync.length === 0) {
+                    let initialFiles = this.filteredSyncFiles;
+                    if (initialFiles.length === 0) {
                         toastr.warning('没有需要同步的文件 (可能所有文件都被排除了)');
                         return;
                     }
 
                     this.isSyncing = true;
-                    
-                    // --- Enhanced Logging ---
-                    let logOutput = "--- 文件同步日志 ---\n";
-                    logOutput += `发现 ${filesToSync.length} 个文件需要同步:\n`;
-                    filesToSync.forEach(file => {
-                        logOutput += `[待同步] ${file.webkitRelativePath}\n`;
-                    });
-                    logOutput += "\n准备上传...\n";
-                    this.syncResult = logOutput;
-                    // --- End Enhanced Logging ---
-
-                    const formData = new FormData();
-                    for (const file of filesToSync) {
-                        formData.append('files', file, file.webkitRelativePath);
-                    }
+                    this.syncResult = "--- 增量同步日志 ---\n";
 
                     try {
+                        // 1. Fetch server manifest
+                        this.syncResult += "1. 获取服务端文件清单...\n";
+                        const manifestResponse = await axios.get('/api/sync/manifest');
+                        const serverManifest = manifestResponse.data;
+                        this.syncResult += `   - 服务端存在 ${Object.keys(serverManifest).length} 个文件。\n`;
+
+                        // 2. Calculate local hashes and find files to upload
+                        this.syncResult += "2. 计算本地文件哈希并比对差异...\n";
+                        const filesToUpload = [];
+                        let skippedCount = 0;
+
+                        for (const file of initialFiles) {
+                            const path = file.webkitRelativePath;
+                            const localHash = await this.getFileHash(file);
+
+                            if (serverManifest[path] === localHash) {
+                                this.syncResult += `   - [跳过] ${path} (未更改)\n`;
+                                skippedCount++;
+                            } else {
+                                this.syncResult += `   - [待上传] ${path} (新增或已更改)\n`;
+                                filesToUpload.push(file);
+                            }
+                        }
+
+                        this.syncResult += `\n比对完成。共 ${skippedCount} 个文件已是最新，${filesToUpload.length} 个文件需要同步。\n`;
+
+                        if (filesToUpload.length === 0) {
+                            this.syncResult += "\n所有文件均已同步，无需上传。";
+                            this.isSyncing = false;
+                            this.syncConfig.files = [];
+                            return;
+                        }
+
+                        // 3. Upload changed files
+                        this.syncResult += "\n3. 开始上传差异文件...\n";
+                        const formData = new FormData();
+                        for (const file of filesToUpload) {
+                            formData.append('files', file, file.webkitRelativePath);
+                        }
+
                         const response = await axios.post('/api/sync', formData, {
-                            headers: {
-                                'Content-Type': 'multipart/form-data'
-                            },
+                            headers: { 'Content-Type': 'multipart/form-data' },
                             onUploadProgress: (progressEvent) => {
                                 const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                                // To avoid overwriting the pre-upload log, we append the progress.
-                                this.syncResult = logOutput + `\nUPLOADING... ${percentCompleted}%`;
+                                this.syncResult = this.syncResult.split('UPLOADING...')[0] + `UPLOADING... ${percentCompleted}%`;
                             }
                         });
-                        this.syncResult = logOutput + "\n" + (response.data.message || '同步完成');
-                        toastr.success('代码同步成功！');
+
+                        this.syncResult += "\n" + (response.data.message || '同步完成');
+                        toastr.success('增量同步成功！');
+
                     } catch (error) {
                         const errorMessage = '同步失败: ' + (error.response?.data?.error || error.message);
-                        this.syncResult = logOutput + "\n" + errorMessage;
+                        this.syncResult += "\n" + errorMessage;
                         toastr.error(errorMessage);
                     } finally {
                         this.isSyncing = false;
-                        this.syncConfig.files = []; // 清空已选择的文件
+                        this.syncConfig.files = []; // Clear selection after sync
                     }
                 },
                 async openTensorboard(taskId) {

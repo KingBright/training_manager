@@ -6,29 +6,36 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use axum_extra::extract::{multipart::MultipartError, Multipart};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{migrate::MigrateDatabase, Sqlite, SqlitePool};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs::File,
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::{
-    fs,
+    fs as tokio_fs, // Use an alias to avoid conflict with std::fs
     process::{Child, Command},
     sync::{Mutex, RwLock},
 };
 use tower_http::{cors::CorsLayer, services::ServeDir};
-use tracing::{info, error};
+use tracing::{error, info};
 use uuid::Uuid;
-use axum_extra::extract::{multipart::MultipartError, Multipart};
-use glob::Pattern;
+use walkdir::WalkDir;
 
-mod config; // Added
+mod config;
 
-// 数据结构定义
+// --- Data Structures ---
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Task {
     pub id: String,
     pub name: String,
     pub command: String,
-    pub conda_env: Option<String>,  // 新增conda环境字段
+    pub conda_env: Option<String>,
     pub working_dir: Option<String>,
     pub status: TaskStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -50,19 +57,25 @@ pub enum TaskStatus {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskRequest {
-    pub command: String,              // 完整的命令
-    pub conda_env: Option<String>,    // conda环境
-    pub working_dir: Option<String>,  // 工作目录
+    pub command: String,
+    pub conda_env: Option<String>,
+    pub working_dir: Option<String>,
 }
 
-// 应用状态
+#[derive(Serialize)]
+pub struct SyncConfigResponse {
+    pub default_excludes: Vec<String>,
+}
+
+// --- Application State and Error Handling ---
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: SqlitePool,
     pub tasks: Arc<RwLock<HashMap<String, TaskInfo>>>,
     pub queue: Arc<Mutex<Vec<String>>>,
     pub current_task: Arc<Mutex<Option<String>>>,
-    pub config: config::Config, // Changed from AppConfig
+    pub config: config::Config,
 }
 
 #[derive(Debug, Clone)]
@@ -71,9 +84,6 @@ pub struct TaskInfo {
     pub process: Option<Arc<Mutex<Child>>>,
 }
 
-// Removed AppConfig struct and its impl Default
-
-// 错误类型
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
     #[error("Database error: {0}")]
@@ -106,59 +116,51 @@ impl axum::response::IntoResponse for AppError {
                 (StatusCode::BAD_REQUEST, format!("Multipart form error: {}", err))
             }
         };
-        
-        (status, Json(serde_json::json!({"error": error_message}))).into_response()
+        (status, Json(serde_json::json!({ "error": error_message }))).into_response()
     }
 }
 
+// --- Main Application ---
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 初始化日志
     tracing_subscriber::fmt::init();
     
-    // 创建数据库
     let database_url = "sqlite:./isaaclab_manager.db";
     if !Sqlite::database_exists(database_url).await.unwrap_or(false) {
         Sqlite::create_database(database_url).await?;
     }
     
     let db = SqlitePool::connect(database_url).await?;
-    
-    // 运行数据库迁移
     sqlx::migrate!("./migrations").run(&db).await?;
     
-    // 创建应用状态
-    let config = config::Config::load()?; // New: Load config from file or env
+    let config = config::Config::load()?;
     let state = AppState {
         db: db.clone(),
-        tasks: Arc::new(RwLock::new(HashMap::new())) ,
-        queue: Arc::new(Mutex::new(Vec::new())) ,
-        current_task: Arc::new(Mutex::new(None)) ,
-        config: config, // Use the loaded config
+        tasks: Arc::new(RwLock::new(HashMap::new())),
+        queue: Arc::new(Mutex::new(Vec::new())),
+        current_task: Arc::new(Mutex::new(None)),
+        config,
     };
     
-    // 启动任务管理器
     let task_manager = TaskManager::new(state.clone());
     tokio::spawn(task_manager.run());
     
-    // 创建路由
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/tasks", get(list_tasks_handler).post(create_task_handler))
-        .route("/api/tasks/{id}", get(get_task_handler).delete(delete_task_handler))
-        .route("/api/tasks/{id}/stop", post(stop_task_handler))
-        .route("/api/tasks/{id}/logs", get(get_task_logs_handler))
+        .route("/api/tasks/:id", get(get_task_handler).delete(delete_task_handler))
+        .route("/api/tasks/:id/stop", post(stop_task_handler))
+        .route("/api/tasks/:id/logs", get(get_task_logs_handler))
         .route("/api/conda/envs", get(get_conda_envs_handler))
         .route("/api/queue", get(get_queue_handler))
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
-        // .route("/api/tensorboard/{id}", get(get_tensorboard_handler))
-        // .route("/api/download/{id}/onnx", get(download_onnx_handler))
+        .route("/api/sync/manifest", get(get_sync_manifest_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state);
     
-    // 启动服务器
     info!("Starting IsaacLab Manager on http://0.0.0.0:3000");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app).await?;
@@ -166,7 +168,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// 处理器函数
+// --- Route Handlers ---
+
 async fn index_handler() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
@@ -175,7 +178,6 @@ async fn list_tasks_handler(State(state): State<AppState>) -> Result<Json<Vec<Ta
     let tasks = sqlx::query_as::<_, Task>("SELECT * FROM tasks ORDER BY created_at DESC")
         .fetch_all(&state.db)
         .await?;
-    
     Ok(Json(tasks))
 }
 
@@ -184,11 +186,7 @@ async fn create_task_handler(
     Json(request): Json<CreateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
     let id = Uuid::new_v4().to_string();
-    
-    // 确定使用的conda环境
-    let conda_env = request.conda_env.unwrap_or_else(|| state.config.isaaclab.default_conda_env.clone()); // Updated
-    
-    // 从命令中提取任务名称(简单解析)
+    let conda_env = request.conda_env.unwrap_or_else(|| state.config.isaaclab.default_conda_env.clone());
     let task_name = extract_task_name(&request.command);
     
     let task = Task {
@@ -205,279 +203,172 @@ async fn create_task_handler(
         tensorboard_port: None,
     };
     
-    // 保存到数据库
     sqlx::query!(
         "INSERT INTO tasks (id, name, command, conda_env, working_dir, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        task.id,
-        task.name,
-        task.command,
-        task.conda_env,
-        task.working_dir,
-        task.status,
-        task.created_at
+        task.id, task.name, task.command, task.conda_env, task.working_dir, task.status, task.created_at
     )
     .execute(&state.db)
     .await?;
     
-    // 添加到队列
-    {
-        let mut queue = state.queue.lock().await;
-        queue.push(id.clone());
-    }
-    
+    state.queue.lock().await.push(id.clone());
     info!("Created task: {} with conda env: {} and command: {}", id, conda_env, request.command);
-    
     Ok(Json(task))
 }
 
-// 辅助函数：从命令中提取任务名称
-fn extract_task_name(command: &str) -> String {
-    // 尝试从命令中提取有意义的名称
-    if let Some(task_part) = command.split_whitespace()
-        .find(|part| part.starts_with("--task=")) {
-        if let Some(task_name) = task_part.strip_prefix("--task=") {
-            return task_name.to_string();
-        }
-    }
-    
-    // 如果没找到--task参数，使用python文件名
-    if let Some(py_file) = command.split_whitespace()
-        .find(|part| part.ends_with(".py")) {
-        if let Some(file_name) = py_file.split('/').last() {
-            return file_name.trim_end_matches(".py").to_string();
-        }
-    }
-    
-    // 默认名称
-    "训练任务".to_string()
-}
-
-async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Vec<String>>, AppError> {
-    let conda_envs = get_conda_environments(&state.config.isaaclab.conda_path.to_string_lossy()).await?; // Updated
-    Ok(Json(conda_envs))
-}
-
-async fn get_conda_environments(conda_path: &str) -> Result<Vec<String>, AppError> {
-    let conda_executable = std::path::Path::new(conda_path).join("bin/conda");
-    info!("Using conda executable: {:?}", conda_executable);
-
-    if !conda_executable.is_file() {
-        error!("Conda executable not found at: {:?}", conda_executable);
-        return Err(AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("Conda executable not found at: {:?}", conda_executable),
-        )));
-    }
-
-    let output = Command::new(conda_executable)
-        .args(&["env", "list"])
-        .output()
-        .await?;
-    
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        error!("Failed to list conda environments. stderr: {}", stderr);
-        return Ok(vec!["base".to_string()]); // 默认返回base环境
-    }
-    
-    info!("conda env list stdout: {}", stdout);
-
-    let mut envs = Vec::new();
-    
-    for line in stdout.lines() {
-        if !line.starts_with('#') && !line.trim().is_empty() {
-            if let Some(env_name) = line.split_whitespace().next() {
-                if env_name != "*" { // 跳过当前环境标记
-                    envs.push(env_name.to_string());
-                }
-            }
-        }
-    }
-    
-    if envs.is_empty() {
-        envs.push("base".to_string());
-    }
-    
-    Ok(envs)
-}
-
-async fn get_task_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Task>, AppError> {
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+async fn get_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<Task>, AppError> {
+    sqlx::query_as("SELECT * FROM tasks WHERE id = ?")
         .bind(&id)
         .fetch_optional(&state.db)
-        .await? 
-        .ok_or_else(|| AppError::TaskNotFound(id))?;
-    
-    Ok(Json(task))
+        .await?
+        .map(Json)
+        .ok_or_else(|| AppError::TaskNotFound(id))
 }
 
-async fn stop_task_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    // 实现任务停止逻辑
-    let tasks = state.tasks.read().await;
-    if let Some(task_info) = tasks.get(&id) {
+async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
+    if let Some(task_info) = state.tasks.read().await.get(&id) {
         if let Some(process) = &task_info.process {
-            let mut process = process.lock().await;
-            let _ = process.kill().await;
+            process.lock().await.kill().await?;
         }
     }
-    
-    // 更新数据库状态
     let now = chrono::Utc::now();
-    sqlx::query!("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?", 
-        TaskStatus::Stopped, now, id)
+    sqlx::query!("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?", TaskStatus::Stopped, now, id)
         .execute(&state.db)
         .await?;
-    
     Ok(Json(serde_json::json!({"message": "Task stopped"})))
 }
 
-async fn delete_task_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    // Delete the task from the database
+async fn delete_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
     sqlx::query!("DELETE FROM tasks WHERE id = ?", id)
         .execute(&state.db)
         .await?;
-
-    // Remove the task from the in-memory map
     state.tasks.write().await.remove(&id);
-
     Ok(Json(serde_json::json!({"message": "Task deleted"})))
 }
 
-async fn get_task_logs_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<String, AppError> {
-    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.db)
-        .await? 
-        .ok_or_else(|| AppError::TaskNotFound(id.clone()))?;
-
-    if let Some(log_path) = task.log_path {
-        match tokio::fs::read_to_string(&log_path).await {
-            Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start_index = if lines.len() > 200 { lines.len() - 200 } else { 0 };
-                Ok(lines[start_index..].join("\n"))
-            },
-            Err(_) => Ok("Log file not found or empty".to_string()),
-        }
-    } else {
-        Ok("Log path not set for this task".to_string())
+async fn get_task_logs_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<String, AppError> {
+    let task = get_task_handler(State(state), Path(id)).await?.0;
+    match task.log_path {
+        Some(log_path) => Ok(tokio::fs::read_to_string(&log_path).await.unwrap_or_else(|_| "Log not found or empty.".to_string())),
+        None => Ok("Log path not set.".to_string()),
     }
 }
 
 async fn get_queue_handler(State(state): State<AppState>) -> Json<Vec<String>> {
-    let queue = state.queue.lock().await;
-    Json(queue.clone())
+    Json(state.queue.lock().await.clone())
 }
 
-#[derive(Serialize)]
-pub struct SyncConfigResponse {
-    pub default_excludes: Vec<String>,
+async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Vec<String>>, AppError> {
+    let conda_path = state.config.isaaclab.conda_path.to_string_lossy().to_string();
+    Ok(Json(get_conda_environments(&conda_path).await?))
 }
 
-async fn get_sync_config_handler(
-    State(state): State<AppState>,
-) -> Result<Json<SyncConfigResponse>, AppError> {
-    let response = SyncConfigResponse {
+
+// --- Sync Handlers ---
+
+async fn get_sync_config_handler(State(state): State<AppState>) -> Json<SyncConfigResponse> {
+    Json(SyncConfigResponse {
         default_excludes: state.config.sync.default_excludes.clone(),
-    };
-    Ok(Json(response))
+    })
+}
+
+async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json<HashMap<String, String>>, AppError> {
+    let target_path = PathBuf::from(&state.config.sync.target_path);
+    if !target_path.exists() || !target_path.is_dir() {
+        return Ok(Json(HashMap::new()));
+    }
+    let target_path_str = target_path.to_string_lossy().to_string();
+
+    let manifest = tokio::task::spawn_blocking(move || {
+        let mut manifest: HashMap<String, String> = HashMap::new();
+        for entry in WalkDir::new(&target_path_str).into_iter().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(relative_path) = path.strip_prefix(&target_path_str) {
+                    if let Ok(mut file) = File::open(path) {
+                        let mut hasher = Sha256::new();
+                        if std::io::copy(&mut file, &mut hasher).is_ok() {
+                            let hash = format!("{:x}", hasher.finalize());
+                            manifest.insert(relative_path.to_string_lossy().replace('\\', "/"), hash);
+                        }
+                    }
+                }
+            }
+        }
+        manifest
+    }).await.map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+    Ok(Json(manifest))
 }
 
 async fn sync_code_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // 1. Get target path from config
     let target_path = PathBuf::from(state.config.sync.target_path.to_string_lossy().to_string());
     if target_path.to_string_lossy().is_empty() {
-        error!("Sync target path is not configured.");
-        return Ok(Json(serde_json::json!({"error": "代码同步目标路径未配置"})));
+        return Ok(Json(serde_json::json!({"error": "Sync target path not configured"})));
     }
     
-    // 2. Compile exclusion patterns
-    let exclude_patterns: Vec<Pattern> = state.config.sync.default_excludes
-        .iter()
-        .map(|p| Pattern::new(p).expect("Invalid glob pattern in config"))
-        .collect();
-
     let mut files_written = 0;
-    let mut files_excluded = 0;
-
-    // 3. Process multipart stream
     while let Some(field) = multipart.next_field().await? {
-        if let Some(relative_path_str) = field.name().map(|s| s.to_string()) {
-            if relative_path_str.is_empty() {
-                continue;
-            }
-
-            // Security: clean the path to prevent directory traversal
+        if let Some(relative_path_str) = field.name() {
             let relative_path = PathBuf::from(relative_path_str)
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))
                 .collect::<PathBuf>();
 
             let data = field.bytes().await?;
-
-            // 4. Check against exclusion patterns
-            let is_excluded = exclude_patterns.iter().any(|p| p.matches_path(&relative_path));
-
-            if is_excluded {
-                files_excluded += 1;
-                info!("Excluding file: {}", relative_path.display());
-                continue;
-            }
-
-            // 5. Write file to disk
             let dest_path = target_path.join(&relative_path);
             if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent).await?;
+                tokio_fs::create_dir_all(parent).await?;
             }
-            fs::write(&dest_path, &data).await?;
+            tokio_fs::write(&dest_path, &data).await?;
             files_written += 1;
-            info!("Synced file: {}", dest_path.display());
         }
     }
 
-    let message = format!(
-        "同步完成。\n成功写入 {} 个文件。\n排除了 {} 个文件。",
-        files_written, files_excluded
-    );
-
-    Ok(Json(serde_json::json!({ "message": message })))
+    Ok(Json(serde_json::json!({ "message": format!("Sync complete. Wrote {} files.", files_written) })))
 }
 
-// TaskManager
+
+// --- Utility Functions ---
+
+fn extract_task_name(command: &str) -> String {
+    command.split_whitespace()
+        .find(|part| part.starts_with("--task="))
+        .and_then(|part| part.strip_prefix("--task="))
+        .unwrap_or("Training Task")
+        .to_string()
+}
+
+async fn get_conda_environments(conda_path: &str) -> Result<Vec<String>, AppError> {
+    let output = Command::new(format!("{}/bin/conda", conda_path))
+        .args(["env", "list"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Ok(vec!["base".to_string()]);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .map(String::from)
+        .collect())
+}
+
+// --- Task Manager Background Service ---
+
 struct TaskManager {
     state: AppState,
 }
 
 impl TaskManager {
-    fn new(state: AppState) -> Self {
-        Self { state }
-    }
+    fn new(state: AppState) -> Self { Self { state } }
 
     async fn run(self) {
         loop {
-            let task_id = {
-                let mut queue = self.state.queue.lock().await;
-                queue.pop()
-            };
-
-            if let Some(task_id) = task_id {
+            if let Some(task_id) = self.state.queue.lock().await.pop() {
                 let state = self.state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = Self::execute_task(state, &task_id).await {
@@ -485,71 +376,46 @@ impl TaskManager {
                     }
                 });
             }
-
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     }
 
     async fn execute_task(state: AppState, task_id: &str) -> Result<()> {
-        // Create log file
         let log_dir = std::path::Path::new("./outputs").join(task_id).join("logs");
-        tokio::fs::create_dir_all(&log_dir).await?;
+        tokio_fs::create_dir_all(&log_dir).await?;
         let log_path = log_dir.join("task.log");
-        let log_file = tokio::fs::File::create(&log_path).await?;
+        let log_file = std::fs::File::create(&log_path)?;
 
-        // Update task status and log_path
         let now = chrono::Utc::now();
-        let log_path_str = log_path.to_str().unwrap_or_default();
+        let log_path_str = log_path.to_str();
         sqlx::query!(
             "UPDATE tasks SET status = ?, started_at = ?, log_path = ? WHERE id = ?",
-            TaskStatus::Running, 
-            now,
-            log_path_str,
-            task_id
+            TaskStatus::Running, now, log_path_str, task_id
         )
-        .execute(&state.db)
-        .await?;
+        .execute(&state.db).await?;
 
-        // Get task details
         let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-            .bind(task_id)
-            .fetch_one(&state.db)
-            .await?;
+            .bind(task_id).fetch_one(&state.db).await?;
 
-        // Set working directory
-        let working_dir = task.working_dir.clone().unwrap_or_else(|| state.config.tasks.working_directory.to_string_lossy().to_string());
+        let working_dir = task.working_dir.unwrap_or_else(|| state.config.tasks.working_directory.to_string_lossy().to_string());
 
-        // Execute the command
         let mut cmd = Command::new("bash");
-        cmd.current_dir(working_dir);
-        cmd.arg("-c");
-        cmd.arg(&task.command);
-
-        let std_log_file = log_file.into_std().await;
-        cmd.stdout(std_log_file.try_clone()?);
-        cmd.stderr(std_log_file);
+        cmd.current_dir(working_dir)
+            .arg("-c")
+            .arg(&task.command)
+            .stdout(log_file.try_clone()?)
+            .stderr(log_file);
 
         let mut child = cmd.spawn()?;
+        let status = child.wait().await?;
 
-        // Wait for the command to finish
-        let output = child.wait_with_output().await?;
-
-        // Update task status based on exit code
-        let status = if output.status.success() {
-            TaskStatus::Completed
-        } else {
-            TaskStatus::Failed
-        };
-
+        let final_status = if status.success() { TaskStatus::Completed } else { TaskStatus::Failed };
         let finished_at = chrono::Utc::now();
         sqlx::query!(
             "UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?",
-            status,
-            finished_at,
-            task_id
+            final_status, finished_at, task_id
         )
-        .execute(&state.db)
-        .await?;
+        .execute(&state.db).await?;
 
         Ok(())
     }

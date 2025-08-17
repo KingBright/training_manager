@@ -27,6 +27,8 @@ which = "8.0"
 
 # 其他工具
 glob = "0.3.1"
+sha2 = "0.10"
+walkdir = "2"
 
 # 日志
 tracing = "0.1"
