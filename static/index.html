@@ -570,7 +570,7 @@
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/micromatch/4.0.5/micromatch.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/glob-to-regexp/0.4.1/glob-to-regexp.min.js"></script>
     <script>
         const { createApp } = Vue;
 
@@ -765,10 +765,20 @@
                     this.syncConfig.files = Array.from(event.target.files);
                 },
                 isExcluded(path, patterns) {
-                    // Use micromatch for robust glob pattern matching.
-                    // micromatch.isMatch can take an array of patterns directly.
-                    // The { dot: true } option ensures that patterns match files starting with a dot (e.g., .git)
-                    return micromatch.isMatch(path, patterns, { dot: true });
+                    // Use glob-to-regexp to convert glob patterns to regular expressions.
+                    return patterns.some(pattern => {
+                        // Options:
+                        // extended: Supports advanced globbing features like `?`, `*`, `+`, `@`, `!`
+                        // globstar: Supports `**` for matching nested directories
+                        // dot: Allows patterns to match files starting with a dot
+                        try {
+                            const re = globToRegexp(pattern, { extended: true, globstar: true, dot: true });
+                            return re.test(path);
+                        } catch (e) {
+                            console.error(`Invalid glob pattern: ${pattern}`, e);
+                            return false;
+                        }
+                    });
                 },
                 async getFileHash(file) {
                     const buffer = await file.arrayBuffer();
