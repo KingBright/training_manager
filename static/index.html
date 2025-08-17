@@ -570,7 +570,7 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/minimatch-browser@1.0.0/minimatch.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/micromatch/4.0.5/micromatch.min.js"></script>
     <script>
         const { createApp } = Vue;
 
@@ -765,9 +765,10 @@
                     this.syncConfig.files = Array.from(event.target.files);
                 },
                 isExcluded(path, patterns) {
-                    // Use minimatch for robust glob pattern matching.
+                    // Use micromatch for robust glob pattern matching.
+                    // micromatch.isMatch can take an array of patterns directly.
                     // The { dot: true } option ensures that patterns match files starting with a dot (e.g., .git)
-                    return patterns.some(pattern => minimatch(path, pattern, { dot: true }));
+                    return micromatch.isMatch(path, patterns, { dot: true });
                 },
                 async getFileHash(file) {
                     const buffer = await file.arrayBuffer();
