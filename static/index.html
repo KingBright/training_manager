@@ -796,9 +796,23 @@
                     }
 
                     this.isSyncing = true;
-                    this.syncResult = "--- 增量同步日志 ---\n";
+                    this.syncResult = "--- 增量同步日志 ---\
+";
 
                     try {
+                        // Find the common base path from the first file's relative path
+                        const firstPath = initialFiles[0].webkitRelativePath;
+                        const basePath = firstPath.split('/')[0];
+
+                        // Create a new array of file objects with the base path stripped from their relative paths
+                        const filesWithCorrectedPaths = initialFiles.map(file => {
+                            let relativePath = file.webkitRelativePath;
+                            if (relativePath.startsWith(basePath + '/')) {
+                                relativePath = relativePath.substring(basePath.length + 1);
+                            }
+                            return { file: file, relativePath: relativePath };
+                        });
+
                         // 1. Fetch server manifest
                         this.syncResult += "1. 获取服务端文件清单...\n";
                         const manifestResponse = await axios.get('/api/sync/manifest');
@@ -810,16 +824,18 @@
                         const filesToUpload = [];
                         let skippedCount = 0;
 
-                        for (const file of initialFiles) {
-                            const path = file.webkitRelativePath;
-                            const localHash = await this.getFileHash(file);
+                        for (const item of filesWithCorrectedPaths) {
+                            const path = item.relativePath;
+                            if (!path) continue; // Skip if path is empty after stripping
+
+                            const localHash = await this.getFileHash(item.file);
 
                             if (serverManifest[path] === localHash) {
                                 this.syncResult += `   - [跳过] ${path} (未更改)\n`;
                                 skippedCount++;
                             } else {
                                 this.syncResult += `   - [待上传] ${path} (新增或已更改)\n`;
-                                filesToUpload.push(file);
+                                filesToUpload.push(item);
                             }
                         }
 
@@ -828,6 +844,8 @@
                         if (filesToUpload.length === 0) {
                             this.syncResult += "\n所有文件均已同步，无需上传。";
                             this.isSyncing = false;
+                            // Clear file input after successful sync
+                            document.querySelector('input[type=file]').value = '';
                             this.syncConfig.files = [];
                             return;
                         }
@@ -835,8 +853,8 @@
                         // 3. Upload changed files
                         this.syncResult += "\n3. 开始上传差异文件...\n";
                         const formData = new FormData();
-                        for (const file of filesToUpload) {
-                            formData.append('files', file, file.webkitRelativePath);
+                        for (const item of filesToUpload) {
+                            formData.append('files', item.file, item.relativePath);
                         }
 
                         const response = await axios.post('/api/sync', formData, {
@@ -856,7 +874,9 @@
                         toastr.error(errorMessage);
                     } finally {
                         this.isSyncing = false;
-                        this.syncConfig.files = []; // Clear selection after sync
+                        // Clear file input after sync attempt
+                        document.querySelector('input[type=file]').value = '';
+                        this.syncConfig.files = [];
                     }
                 },
                 async openTensorboard(taskId) {
