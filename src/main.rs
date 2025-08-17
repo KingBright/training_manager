@@ -76,6 +76,7 @@ pub struct AppState {
     pub queue: Arc<Mutex<Vec<String>>>,
     pub current_task: Arc<Mutex<Option<String>>>,
     pub config: config::Config,
+    pub tensorboard_instances: Arc<RwLock<HashMap<String, (Child, u16)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +142,7 @@ async fn main() -> Result<()> {
         queue: Arc::new(Mutex::new(Vec::new())),
         current_task: Arc::new(Mutex::new(None)),
         config,
+        tensorboard_instances: Arc::new(RwLock::new(HashMap::new())),
     };
     
     let task_manager = TaskManager::new(state.clone());
@@ -157,12 +159,14 @@ async fn main() -> Result<()> {
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
+        .route("/api/tensorboard/{id}", get(get_tensorboard_url_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state.clone());
     
-    info!("Starting IsaacLab Manager on http://0.0.0.0:6006");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:6006").await?;
+    let addr = format!("{}:{}", state.config.server.host, state.config.server.port);
+    info!("Starting IsaacLab Manager on http://{}", addr);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     
     Ok(())
@@ -230,6 +234,13 @@ async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>
             process.lock().await.kill().await?;
         }
     }
+
+    if let Some((mut tb_child, _)) = state.tensorboard_instances.write().await.remove(&id) {
+        if let Err(e) = tb_child.kill().await {
+            error!("Failed to kill TensorBoard process for task {}: {}", id, e);
+        }
+    }
+
     let now = chrono::Utc::now();
     sqlx::query!("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?", TaskStatus::Stopped, now, id)
         .execute(&state.db)
@@ -238,6 +249,9 @@ async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>
 }
 
 async fn delete_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
+    // First, ensure the task is stopped and TensorBoard is killed
+    let _ = stop_task_handler(State(state.clone()), Path(id.clone())).await;
+
     sqlx::query!("DELETE FROM tasks WHERE id = ?", id)
         .execute(&state.db)
         .await?;
@@ -260,6 +274,21 @@ async fn get_queue_handler(State(state): State<AppState>) -> Json<Vec<String>> {
 async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Vec<String>>, AppError> {
     let conda_path = state.config.isaaclab.conda_path.to_string_lossy().to_string();
     Ok(Json(get_conda_environments(&conda_path).await?))
+}
+
+async fn get_tensorboard_url_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let task = get_task_handler(State(state), Path(id)).await?.0;
+    if let Some(port) = task.tensorboard_port {
+        // Assuming the server is accessible from the client via the same host it's running on.
+        // This might need to be adjusted depending on the deployment scenario (e.g., using a public IP or domain).
+        let url = format!("http://{}:{}", "localhost", port);
+        Ok(Json(serde_json::json!({ "url": url })))
+    } else {
+        Ok(Json(serde_json::json!({ "url": null })))
+    }
 }
 
 
@@ -440,16 +469,43 @@ impl TaskManager {
     }
 
     async fn execute_task(state: AppState, task_id: &str) -> Result<()> {
-        let log_dir = std::path::Path::new("./outputs").join(task_id).join("logs");
+        let log_dir = std::path::Path::new(&state.config.storage.output_path).join(task_id);
         tokio_fs::create_dir_all(&log_dir).await?;
         let log_path = log_dir.join("task.log");
         let log_file = std::fs::File::create(&log_path)?;
 
+        // Find an available port for TensorBoard
+        let tb_port = {
+            let instances = state.tensorboard_instances.read().await;
+            let mut port = state.config.tensorboard.base_port;
+            while instances.values().any(|(_, p)| *p == port) {
+                port += 1;
+                if port >= state.config.tensorboard.base_port + state.config.tensorboard.max_instances {
+                    error!("No available ports for TensorBoard.");
+                    // You might want to handle this case more gracefully
+                    return Err(anyhow::anyhow!("No available ports for TensorBoard"));
+                }
+            }
+            port
+        };
+
+        // Launch TensorBoard
+        let tb_log_dir = log_dir.clone();
+        let mut tb_child = Command::new("tensorboard")
+            .arg("--logdir")
+            .arg(tb_log_dir)
+            .arg("--port")
+            .arg(tb_port.to_string())
+            .spawn()?;
+
+        // Store TensorBoard instance
+        state.tensorboard_instances.write().await.insert(task_id.to_string(), (tb_child, tb_port));
+
         let now = chrono::Utc::now();
         let log_path_str = log_path.to_str();
         sqlx::query!(
-            "UPDATE tasks SET status = ?, started_at = ?, log_path = ? WHERE id = ?",
-            TaskStatus::Running, now, log_path_str, task_id
+            "UPDATE tasks SET status = ?, started_at = ?, log_path = ?, tensorboard_port = ? WHERE id = ?",
+            TaskStatus::Running, now, log_path_str, tb_port, task_id
         )
         .execute(&state.db).await?;
 
@@ -475,6 +531,13 @@ impl TaskManager {
             final_status, finished_at, task_id
         )
         .execute(&state.db).await?;
+
+        // Clean up TensorBoard instance after task finishes
+        if let Some((mut tb_child, _)) = state.tensorboard_instances.write().await.remove(task_id) {
+            if let Err(e) = tb_child.kill().await {
+                error!("Failed to kill TensorBoard process for task {}: {}", task_id, e);
+            }
+        }
 
         Ok(())
     }
