@@ -314,22 +314,37 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
 
         let mut manifest: HashMap<String, String> = HashMap::new();
         let mut file_count: u64 = 0;
-        for entry in filtered_walker.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_file() {
-                file_count += 1;
-                if file_count % 1000 == 0 {
-                    info!(file_count, "Hashed {} files so far...", file_count);
-                }
-                tracing::trace!(?path, "Hashing file");
-                if let Ok(relative_path) = path.strip_prefix(&target_path_for_closure) {
-                    if let Ok(mut file) = File::open(path) {
-                        let mut hasher = Sha256::new();
-                        if std::io::copy(&mut file, &mut hasher).is_ok() {
-                            let hash = format!("{:x}", hasher.finalize());
-                            manifest.insert(relative_path.to_string_lossy().replace('\\', "/"), hash);
+        info!("Starting file traversal and hashing...");
+        for result in filtered_walker {
+            match result {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.is_file() {
+                        file_count += 1;
+                        if file_count % 1000 == 0 {
+                            info!(file_count, "Hashed {} files so far...", file_count);
+                        }
+                        tracing::trace!(?path, "Hashing file");
+                        if let Ok(relative_path) = path.strip_prefix(&target_path_for_closure) {
+                            match File::open(path) {
+                                Ok(mut file) => {
+                                    let mut hasher = Sha256::new();
+                                    if let Err(e) = std::io::copy(&mut file, &mut hasher) {
+                                        error!(?path, "Failed to read file for hashing: {}", e);
+                                        continue;
+                                    }
+                                    let hash = format!("{:x}", hasher.finalize());
+                                    manifest.insert(relative_path.to_string_lossy().replace('\\', "/"), hash);
+                                }
+                                Err(e) => {
+                                    error!(?path, "Failed to open file: {}", e);
+                                }
+                            }
                         }
                     }
+                }
+                Err(e) => {
+                    error!("Error walking directory: {}", e);
                 }
             }
         }
