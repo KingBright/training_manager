@@ -161,8 +161,8 @@ async fn main() -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
     
-    info!("Starting IsaacLab Manager on http://0.0.0.0:3000");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    info!("Starting IsaacLab Manager on http://0.0.0.0:6006");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:6006").await?;
     axum::serve(listener, app).await?;
     
     Ok(())
