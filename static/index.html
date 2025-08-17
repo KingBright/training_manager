@@ -570,7 +570,7 @@
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/glob-to-regexp/0.4.1/glob-to-regexp.min.js"></script>
+    
     <script>
         const { createApp } = Vue;
 
@@ -765,19 +765,21 @@
                     this.syncConfig.files = Array.from(event.target.files);
                 },
                 isExcluded(path, patterns) {
-                    // Use glob-to-regexp to convert glob patterns to regular expressions.
+                    const pathSegments = path.split('/');
+
                     return patterns.some(pattern => {
-                        // Options:
-                        // extended: Supports advanced globbing features like `?`, `*`, `+`, `@`, `!`
-                        // globstar: Supports `**` for matching nested directories
-                        // dot: Allows patterns to match files starting with a dot
-                        try {
-                            const re = globToRegexp(pattern, { extended: true, globstar: true, dot: true });
-                            return re.test(path);
-                        } catch (e) {
-                            console.error(`Invalid glob pattern: ${pattern}`, e);
-                            return false;
+                        // Handle wildcard patterns like *.pyc
+                        if (pattern.startsWith('*.')) {
+                            return path.endsWith(pattern.substring(1));
                         }
+                        // Handle directory patterns like logs/
+                        if (pattern.endsWith('/')) {
+                            const dirName = pattern.slice(0, -1);
+                            // Check if any directory in the path matches
+                            return pathSegments.includes(dirName);
+                        }
+                        // Handle exact match for files/directories like .git
+                        return pathSegments.includes(pattern);
                     });
                 },
                 async getFileHash(file) {
