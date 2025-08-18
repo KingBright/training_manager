@@ -167,7 +167,7 @@ async fn main() -> Result<()> {
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
-        .route("/api/sync/download/*path", get(download_file_handler))
+        .route("/api/sync/download/{*path}", get(download_file_handler))
         .route("/api/sync/download_zip", get(download_zip_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
@@ -325,9 +325,10 @@ async fn get_sync_manifest_handler(
 ) -> Result<Json<HashMap<String, String>>, AppError> {
     let base_path = PathBuf::from(&state.config.sync.target_path);
     let mut target_path = base_path.clone();
-    if let Some(remote_path) = &params.remote_path {
-        if !remote_path.is_empty() {
-            target_path.push(sanitize_path(remote_path));
+    if let Some(remote_path_str) = &params.remote_path {
+        if !remote_path_str.is_empty() {
+            let relative_path_str = remote_path_str.strip_prefix('/').unwrap_or(remote_path_str);
+            target_path.push(sanitize_path(relative_path_str));
         }
     }
 
@@ -390,9 +391,10 @@ async fn download_file_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let base_path = PathBuf::from(&state.config.sync.target_path);
     let mut target_dir = base_path.clone();
-    if let Some(remote_path) = &params.remote_path {
-        if !remote_path.is_empty() {
-            target_dir.push(sanitize_path(remote_path));
+    if let Some(remote_path_str) = &params.remote_path {
+        if !remote_path_str.is_empty() {
+            let relative_path_str = remote_path_str.strip_prefix('/').unwrap_or(remote_path_str);
+            target_dir.push(sanitize_path(relative_path_str));
         }
     }
 
@@ -427,9 +429,10 @@ async fn download_zip_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let base_path = PathBuf::from(&state.config.sync.target_path);
     let mut target_path = base_path.clone();
-    if let Some(remote_path) = &params.remote_path {
-        if !remote_path.is_empty() {
-            target_path.push(sanitize_path(remote_path));
+    if let Some(remote_path_str) = &params.remote_path {
+        if !remote_path_str.is_empty() {
+            let relative_path_str = remote_path_str.strip_prefix('/').unwrap_or(remote_path_str);
+            target_path.push(sanitize_path(relative_path_str));
         }
     }
 
