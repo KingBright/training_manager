@@ -406,23 +406,48 @@ async fn download_file_handler(
     Path(path): Path<String>,
     Query(params): Query<SyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let base_path = PathBuf::from(&state.config.sync.target_path);
+    let remote_dir_str = params.remote_path.as_deref().unwrap_or(".");
+    let remote_dir_path = std::path::Path::new(remote_dir_str);
 
-    let mut full_path = base_path.clone();
-    if let Some(remote_dir) = &params.remote_path {
-        if !remote_dir.is_empty() {
-            full_path.push(sanitize_path(remote_dir));
+    let base_dir = if remote_dir_path.is_absolute() {
+        remote_dir_path.to_path_buf()
+    } else {
+        let sanitized_relative = remote_dir_path
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .collect::<PathBuf>();
+        state
+            .config
+            .tasks
+            .working_directory
+            .join(sanitized_relative)
+    };
+
+    let file_path = base_dir.join(sanitize_path(&path));
+
+    let canonical_path = file_path.canonicalize().map_err(|_| {
+        AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "File not found",
+        ))
+    })?;
+
+    if !remote_dir_path.is_absolute() {
+        let canonical_base =
+            state.config.tasks.working_directory.canonicalize().map_err(AppError::Io)?;
+        if !canonical_path.starts_with(&canonical_base) {
+            error!(
+                "Potential directory traversal attempt blocked: {:?}",
+                canonical_path
+            );
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Access denied.",
+            )));
         }
     }
-    full_path.push(sanitize_path(&path));
 
-    let canonical_base = base_path.canonicalize().map_err(AppError::Io)?;
-    let file_path = full_path.canonicalize().map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found")))?;
-
-    if !file_path.starts_with(&canonical_base) {
-        error!("Potential directory traversal attempt blocked: {:?}", path);
-        return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access denied.")));
-    }
+    let file_path = canonical_path;
 
     if !file_path.is_file() {
         return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Path is not a file")));
@@ -447,8 +472,59 @@ async fn download_zip_handler(
     State(state): State<AppState>,
     Query(params): Query<SyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let base_path = PathBuf::from(&state.config.sync.target_path);
-    let target_path = resolve_safe_sync_path(&base_path, params.remote_path.as_ref())?;
+    let remote_path_str = params.remote_path.as_deref().unwrap_or(".");
+    let remote_path = std::path::Path::new(remote_path_str);
+
+    let target_path = if remote_path.is_absolute() {
+        remote_path.to_path_buf()
+    } else {
+        let sanitized_relative = remote_path
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .collect::<PathBuf>();
+        state
+            .config
+            .tasks
+            .working_directory
+            .join(sanitized_relative)
+    };
+
+    let canonical_target = target_path.canonicalize().map_err(|e| {
+        error!(
+            "Target path '{}' not found or invalid: {}",
+            target_path.display(),
+            e
+        );
+        AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "The specified path does not exist.",
+        ))
+    })?;
+
+    if !remote_path.is_absolute() {
+        let canonical_base =
+            state.config.tasks.working_directory.canonicalize().map_err(|e| {
+                error!(
+                    "Working directory '{}' not found or invalid: {}",
+                    state.config.tasks.working_directory.display(),
+                    e
+                );
+                AppError::Io(e)
+            })?;
+        if !canonical_target.starts_with(&canonical_base) {
+            error!(
+                "Security violation: Attempt to access path '{}' which is outside of working directory '{}'",
+                canonical_target.display(),
+                canonical_base.display()
+            );
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Access denied.",
+            )));
+        }
+    }
+
+    let target_path = canonical_target;
 
     let zip_buffer = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, std::io::Error> {
         let mut buffer = Vec::new();
