@@ -91,7 +91,7 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Self> {
         // 尝试从配置文件加载
-        if let Ok(config_str) = std::fs::read_to_string("config/.app.toml") {
+        if let Ok(config_str) = std::fs::read_to_string("config/app.toml") {
             match toml::from_str(&config_str) {
                 Ok(config) => return Ok(config),
                 Err(e) => tracing::warn!("Failed to parse config file: {}", e),

@@ -20,3 +20,5 @@ isaaclab_manager.db-shm
 
 # Config
 config/app.toml
+config/.app.toml
+nohup.out
