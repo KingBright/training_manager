@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
-        .route("/api/sync/download/*path", get(download_file_handler))
+        .route("/api/sync/download/{path}", get(download_file_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
