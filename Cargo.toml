@@ -3,6 +3,14 @@ name = "isaaclab-manager"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "isaaclab-manager"
+path = "src/main.rs"
+
+[[bin]]
+name = "sync-client"
+path = "src/bin/sync_client.rs"
+
 [dependencies]
 # Web框架
 axum = "0.8"
@@ -49,10 +57,13 @@ chrono = { version = "0.4", features = ["serde"] }
 notify = "8.2"
 
 # HTTP客户端
-reqwest = "0.12"
+reqwest = { version = "0.12", features = ["json"] }
 
 # 模板引擎
 askama = "0.14"
 askama_axum = "0.4"
 sysinfo = "0.36.1"
 toml = "0.9.5"
+tokio-util = "0.7.16"
+clap = { version = "4.5.45", features = ["derive"] }
+indicatif = "0.18.0"

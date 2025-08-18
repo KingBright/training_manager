@@ -1,8 +1,9 @@
 use anyhow::Result;
 use axum::{
+    body::Body,
     extract::{Path, State},
-    http::StatusCode,
-    response::{Html, Json},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -21,6 +22,7 @@ use tokio::{
     process::{Child, Command},
     sync::{Mutex, RwLock},
 };
+use tokio_util::io::ReaderStream;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -158,6 +160,7 @@ async fn main() -> Result<()> {
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
+        .route("/api/sync/download/*path", get(download_file_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
@@ -387,6 +390,51 @@ async fn get_sync_manifest_handler(State(state): State<AppState>) -> Result<Json
     info!(manifest_size = manifest.len(), "Manifest generation complete. Returning manifest.");
     Ok(Json(manifest))
 }
+
+async fn download_file_handler(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let target_path = PathBuf::from(&state.config.sync.target_path);
+    let requested_path = PathBuf::from(path);
+
+    // Sanitize the path to prevent directory traversal
+    let safe_path = requested_path
+        .components()
+        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+        .collect::<PathBuf>();
+
+    let file_path = target_path.join(safe_path);
+
+    info!("File download requested: {:?}", file_path);
+
+    if !file_path.starts_with(&target_path) {
+        error!("Potential directory traversal attempt blocked: {:?}", requested_path);
+        return Ok((StatusCode::FORBIDDEN, "Forbidden").into_response());
+    }
+
+    match tokio_fs::File::open(&file_path).await {
+        Ok(file) => {
+            let stream = ReaderStream::new(file);
+            let body = Body::from_stream(stream);
+
+            let headers = [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", requested_path.file_name().unwrap_or_default().to_string_lossy())
+                ),
+            ];
+
+            Ok((headers, body).into_response())
+        }
+        Err(e) => {
+            error!("Failed to open file for download: {:?}, error: {}", file_path, e);
+            Ok((StatusCode::NOT_FOUND, "File not found").into_response())
+        }
+    }
+}
+
 
 async fn sync_code_handler(
     State(state): State<AppState>,

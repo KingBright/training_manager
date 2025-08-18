@@ -547,6 +547,33 @@
                         </div>
                         <div>{{ syncResult }}</div>
                     </div>
+
+                    <hr style="margin: 30px 0; border: 1px solid rgba(0,0,0,0.05);">
+
+                    <div>
+                        <h3 style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            <i class="fas fa-cloud-download-alt"></i> 从服务器下载代码
+                        </h3>
+                        <p style="margin-bottom: 20px; color: #666;">
+                            将服务器 <code style="background: rgba(0,0,0,0.05); padding: 2px 5px; border-radius: 4px;">sync.target_path</code> 目录中的所有文件下载到本地。
+                        </p>
+                        <div class="form-group">
+                             <label>重要提示</label>
+                             <div style="background: #fff3cd; color: #856404; padding: 15px; border-radius: 12px; font-size: 13px;">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                由于浏览器安全限制，文件将自动下载到您的 <strong>默认下载文件夹</strong>。
+                                您需要手动将它们移动到您的项目工作区。
+                            </div>
+                        </div>
+                        <button @click="downloadFromServer" class="btn btn-secondary" :disabled="isDownloading">
+                            <i class="fas fa-cloud-download-alt" v-if="!isDownloading"></i>
+                            <div class="loading" v-if="isDownloading"></div>
+                            {{ isDownloading ? '下载中...' : '开始下载' }}
+                        </button>
+                        <div v-if="downloadStatus" style="margin-top: 15px; color: #666; font-size: 13px;">
+                            {{ downloadStatus }}
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -616,7 +643,9 @@
                     },
                     isCreating: false,
                     isSyncing: false,
-                    syncResult: ''
+                    syncResult: '',
+                    isDownloading: false,
+                    downloadStatus: '',
                 }
             },
             computed: {
@@ -953,6 +982,53 @@
                         // Clear file input after sync attempt
                         document.querySelector('input[type=file]').value = '';
                         this.syncConfig.files = [];
+                    }
+                },
+                async downloadFromServer() {
+                    this.isDownloading = true;
+                    this.downloadStatus = '正在获取服务器文件列表...';
+                    toastr.info('开始从服务器下载文件...');
+
+                    try {
+                        const response = await axios.get('/api/sync/manifest');
+                        const serverManifest = response.data;
+                        const filesToDownload = Object.keys(serverManifest);
+                        const totalFiles = filesToDownload.length;
+
+                        if (totalFiles === 0) {
+                            this.downloadStatus = '服务器上没有可供同步的文件。';
+                            toastr.info('服务器同步目录为空。');
+                            this.isDownloading = false;
+                            return;
+                        }
+
+                        this.downloadStatus = `准备下载 ${totalFiles} 个文件...`;
+
+                        for (let i = 0; i < totalFiles; i++) {
+                            const filePath = filesToDownload[i];
+                            this.downloadStatus = `[${i + 1}/${totalFiles}] 正在下载: ${filePath}`;
+
+                            const downloadUrl = `/api/sync/download/${filePath}`;
+                            const link = document.createElement('a');
+                            link.href = downloadUrl;
+                            link.setAttribute('download', filePath.split('/').pop());
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+
+                            // Add a small delay to prevent the browser from blocking too many downloads
+                            await new Promise(resolve => setTimeout(resolve, 200));
+                        }
+
+                        this.downloadStatus = `所有 ${totalFiles} 个文件已成功开始下载。`;
+                        toastr.success('所有文件下载任务已启动！');
+
+                    } catch (error) {
+                        const errorMessage = '从服务器下载失败: ' + (error.response?.data?.error || error.message);
+                        this.downloadStatus = errorMessage;
+                        toastr.error(errorMessage);
+                    } finally {
+                        this.isDownloading = false;
                     }
                 },
                 refreshQueue() {
