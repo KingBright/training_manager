@@ -7,6 +7,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.8/vue.global.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.0/axios.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
     <style>
@@ -445,8 +446,8 @@
                                     <button @click="viewLogs(task.id)" class="btn btn-secondary">
                                         <i class="fas fa-file-alt"></i> 日志
                                     </button>
-                                    <button v-if="task.status === 'running'" @click="viewTensorboard(task.id)" class="btn">
-                                        <i class="fas fa-chart-line"></i> TensorBoard
+                                    <button @click="viewMetrics(task.id)" class="btn">
+                                        <i class="fas fa-chart-bar"></i> 指标
                                     </button>
                                     <button v-if="task.status === 'completed'" @click="downloadOnnx(task.id)" class="btn">
                                         <i class="fas fa-download"></i> 下载ONNX
@@ -474,6 +475,33 @@
                                 <button @click="refreshLogs(task.id)" class="btn btn-secondary">
                                     <i class="fas fa-refresh"></i> 刷新日志
                                 </button>
+                            </div>
+                        </div>
+
+                        <!-- Metrics Viewer -->
+                        <div v-if="showMetrics[task.id]" class="metrics-viewer" style="margin-top: 20px; background: #f8f9fa; padding: 20px; border-radius: 12px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                <h3 style="color: #333;"><i class="fas fa-chart-bar"></i> 训练指标 - {{ task.name }}</h3>
+                                <button @click="refreshMetrics(task.id)" class="btn btn-secondary"><i class="fas fa-sync-alt"></i> 刷新指标</button>
+                            </div>
+                            <div v-if="!metrics[task.id]">正在加载指标...</div>
+                            <div v-else>
+                                <!-- Latest Fixed Metrics -->
+                                <div class="fixed-metrics" style="margin-bottom: 20px;">
+                                    <h4>最新指标</h4>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; margin-top: 10px;">
+                                        <div v-for="(value, key) in metrics[task.id].latest_fixed_metrics" :key="key" style="background: #fff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                                            <strong style="color: #555;">{{ key }}</strong>: <span style="color: #000; font-weight: bold;">{{ value }}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- Historical Metrics Charts -->
+                                <div class="historical-metrics">
+                                    <h4>历史指标</h4>
+                                    <div :id="'charts-container-' + task.id" style="margin-top: 10px;">
+                                        <!-- Charts will be dynamically inserted here -->
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -548,22 +576,13 @@
                     </div>
                     
                     <div class="card">
-                        <h2><i class="fas fa-chart-line"></i> TensorBoard 链接</h2>
-                        <div v-if="runningTasks.length === 0" style="text-align: center; color: #666; padding: 20px;">
-                            <i class="fas fa-chart-line"></i><br>
-                            暂无运行中的任务
-                        </div>
-                        <div v-for="task in runningTasks" :key="task.id" style="margin-bottom: 15px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.05); padding: 15px; border-radius: 10px;">
-                                <div>
-                                    <strong>{{ task.name }}</strong>
-                                    <div style="font-size: 12px; color: #666;">{{ task.id }}</div>
-                                </div>
-                                <button @click="openTensorboard(task.id)" class="btn">
-                                    <i class="fas fa-external-link-alt"></i> 打开 TensorBoard
-                                </button>
-                            </div>
-                        </div>
+                        <h2><i class="fas fa-info-circle"></i> 帮助</h2>
+                        <p>这里是有关如何使用此仪表板的说明和提示。</p>
+                        <ul style="margin-top: 15px; padding-left: 20px;">
+                            <li><b>任务管理:</b> 创建、监控和管理您的所有IsaacLab训练任务。</li>
+                            <li><b>代码同步:</b> 将您的本地代码与服务器同步以进行训练。</li>
+                            <li><b>监控:</b> 查看正在运行的任务和系统的高级统计信息。</li>
+                        </ul>
                     </div>
                 </div>
             </div>
@@ -583,6 +602,9 @@
                     condaEnvs: [],
                     showLogs: {},
                     logs: {},
+                    showMetrics: {},
+                    metrics: {},
+                    charts: {},
                     newTask: {
                         command: '',
                         condaEnv: '',
@@ -718,16 +740,70 @@
                         this.logs[taskId] = '获取日志失败: ' + error.message;
                     }
                 },
-                async viewTensorboard(taskId) {
+                async viewMetrics(taskId) {
+                    this.showMetrics[taskId] = !this.showMetrics[taskId];
+                    if (this.showMetrics[taskId]) {
+                        await this.refreshMetrics(taskId);
+                    }
+                },
+                async refreshMetrics(taskId) {
                     try {
-                        const response = await axios.get(`/api/tensorboard/${taskId}`);
-                        if (response.data.url) {
-                            window.open(response.data.url, '_blank');
-                        } else {
-                            toastr.info('TensorBoard暂不可用');
+                        const response = await axios.get(`/api/tasks/${taskId}/metrics`);
+                        this.metrics[taskId] = response.data;
+
+                        // Wait for the DOM to update
+                        await this.$nextTick();
+
+                        // Clear previous charts for this task
+                        if (this.charts[taskId]) {
+                            this.charts[taskId].forEach(chart => chart.destroy());
                         }
+                        this.charts[taskId] = [];
+
+                        const container = document.getElementById(`charts-container-${taskId}`);
+                        container.innerHTML = ''; // Clear previous chart canvases
+
+                        const historicalMetrics = this.metrics[taskId].historical_metrics;
+                        if (Object.keys(historicalMetrics).length === 0) {
+                            container.innerHTML = '<p style=\"color: #666;\">没有可用的历史指标。</p>';
+                            return;
+                        }
+
+                        for (const key in historicalMetrics) {
+                            const canvas = document.createElement('canvas');
+                            canvas.style.marginTop = '20px';
+                            container.appendChild(canvas);
+
+                            const ctx = canvas.getContext('2d');
+                            const chart = new Chart(ctx, {
+                                type: 'line',
+                                data: {
+                                    labels: historicalMetrics[key].map(d => d[0]),
+                                    datasets: [{
+                                        label: key,
+                                        data: historicalMetrics[key].map(d => d[1]),
+                                        borderColor: `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 1)`,
+                                        borderWidth: 2,
+                                        fill: false,
+                                        tension: 0.1
+                                    }]
+                                },
+                                options: {
+                                    scales: {
+                                        x: {
+                                            title: { display: true, text: 'Iteration' }
+                                        },
+                                        y: {
+                                            title: { display: true, text: 'Value' }
+                                        }
+                                    }
+                                }
+                            });
+                            this.charts[taskId].push(chart);
+                        }
+
                     } catch (error) {
-                        toastr.error('打开TensorBoard失败: ' + error.message);
+                        toastr.error('获取指标失败: ' + error.message);
                     }
                 },
                 async downloadOnnx(taskId) {
@@ -878,9 +954,6 @@
                         document.querySelector('input[type=file]').value = '';
                         this.syncConfig.files = [];
                     }
-                },
-                async openTensorboard(taskId) {
-                    await this.viewTensorboard(taskId);
                 },
                 refreshQueue() {
                     this.loadQueue();

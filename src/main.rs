@@ -27,6 +27,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 mod config;
+mod metrics_parser;
 
 // --- Data Structures ---
 
@@ -42,7 +43,6 @@ pub struct Task {
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub log_path: Option<String>,
-    pub tensorboard_port: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
@@ -76,7 +76,6 @@ pub struct AppState {
     pub queue: Arc<Mutex<Vec<String>>>,
     pub current_task: Arc<Mutex<Option<String>>>,
     pub config: config::Config,
-    pub tensorboard_instances: Arc<RwLock<HashMap<String, (Child, u16)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +141,6 @@ async fn main() -> Result<()> {
         queue: Arc::new(Mutex::new(Vec::new())),
         current_task: Arc::new(Mutex::new(None)),
         config,
-        tensorboard_instances: Arc::new(RwLock::new(HashMap::new())),
     };
     
     let task_manager = TaskManager::new(state.clone());
@@ -154,12 +152,12 @@ async fn main() -> Result<()> {
         .route("/api/tasks/{id}", get(get_task_handler).delete(delete_task_handler))
         .route("/api/tasks/{id}/stop", post(stop_task_handler))
         .route("/api/tasks/{id}/logs", get(get_task_logs_handler))
+        .route("/api/tasks/{id}/metrics", get(get_task_metrics_handler))
         .route("/api/conda/envs", get(get_conda_envs_handler))
         .route("/api/queue", get(get_queue_handler))
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
-        .route("/api/tensorboard/{id}", get(get_tensorboard_url_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
@@ -204,7 +202,6 @@ async fn create_task_handler(
         started_at: None,
         finished_at: None,
         log_path: None,
-        tensorboard_port: None,
     };
     
     sqlx::query!(
@@ -235,12 +232,6 @@ async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>
         }
     }
 
-    if let Some((mut tb_child, _)) = state.tensorboard_instances.write().await.remove(&id) {
-        if let Err(e) = tb_child.kill().await {
-            error!("Failed to kill TensorBoard process for task {}: {}", id, e);
-        }
-    }
-
     let now = chrono::Utc::now();
     sqlx::query!("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?", TaskStatus::Stopped, now, id)
         .execute(&state.db)
@@ -262,8 +253,33 @@ async fn delete_task_handler(State(state): State<AppState>, Path(id): Path<Strin
 async fn get_task_logs_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<String, AppError> {
     let task = get_task_handler(State(state), Path(id)).await?.0;
     match task.log_path {
-        Some(log_path) => Ok(tokio::fs::read_to_string(&log_path).await.unwrap_or_else(|_| "Log not found or empty.".to_string())),
+        Some(log_path) => {
+            let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_else(|_| "Log not found or empty.".to_string());
+            let lines: Vec<&str> = content.lines().collect();
+            let last_200_lines = lines.iter().rev().take(200).rev().map(|s| *s).collect::<Vec<&str>>().join("\n");
+            Ok(last_200_lines)
+        }
         None => Ok("Log path not set.".to_string()),
+    }
+}
+
+async fn get_task_metrics_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<metrics_parser::MetricsData>, AppError> {
+    let task = get_task_handler(State(state.clone()), Path(id.clone())).await?.0;
+    match task.log_path {
+        Some(log_path) => {
+            let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_else(|_| "".to_string());
+            let metrics = tokio::task::spawn_blocking(move || {
+                metrics_parser::parse_log_file(&content)
+            }).await.map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            Ok(Json(metrics))
+        }
+        None => {
+            // Return empty metrics if log path is not set
+            Ok(Json(metrics_parser::MetricsData {
+                latest_fixed_metrics: std::collections::HashMap::new(),
+                historical_metrics: std::collections::HashMap::new(),
+            }))
+        }
     }
 }
 
@@ -275,22 +291,6 @@ async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Ve
     let conda_path = state.config.isaaclab.conda_path.to_string_lossy().to_string();
     Ok(Json(get_conda_environments(&conda_path).await?))
 }
-
-async fn get_tensorboard_url_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let task = get_task_handler(State(state), Path(id)).await?.0;
-    if let Some(port) = task.tensorboard_port {
-        // Assuming the server is accessible from the client via the same host it's running on.
-        // This might need to be adjusted depending on the deployment scenario (e.g., using a public IP or domain).
-        let url = format!("http://{}:{}", "localhost", port);
-        Ok(Json(serde_json::json!({ "url": url })))
-    } else {
-        Ok(Json(serde_json::json!({ "url": null })))
-    }
-}
-
 
 // --- Sync Handlers ---
 
@@ -474,38 +474,11 @@ impl TaskManager {
         let log_path = log_dir.join("task.log");
         let log_file = std::fs::File::create(&log_path)?;
 
-        // Find an available port for TensorBoard
-        let tb_port = {
-            let instances = state.tensorboard_instances.read().await;
-            let mut port = state.config.tensorboard.base_port;
-            while instances.values().any(|(_, p)| *p == port) {
-                port += 1;
-                if port >= state.config.tensorboard.base_port + state.config.tensorboard.max_instances {
-                    error!("No available ports for TensorBoard.");
-                    // You might want to handle this case more gracefully
-                    return Err(anyhow::anyhow!("No available ports for TensorBoard"));
-                }
-            }
-            port
-        };
-
-        // Launch TensorBoard
-        let tb_log_dir = log_dir.clone();
-        let mut tb_child = Command::new("tensorboard")
-            .arg("--logdir")
-            .arg(tb_log_dir)
-            .arg("--port")
-            .arg(tb_port.to_string())
-            .spawn()?;
-
-        // Store TensorBoard instance
-        state.tensorboard_instances.write().await.insert(task_id.to_string(), (tb_child, tb_port));
-
         let now = chrono::Utc::now();
         let log_path_str = log_path.to_str();
         sqlx::query!(
-            "UPDATE tasks SET status = ?, started_at = ?, log_path = ?, tensorboard_port = ? WHERE id = ?",
-            TaskStatus::Running, now, log_path_str, tb_port, task_id
+            "UPDATE tasks SET status = ?, started_at = ?, log_path = ? WHERE id = ?",
+            TaskStatus::Running, now, log_path_str, task_id
         )
         .execute(&state.db).await?;
 
@@ -531,13 +504,6 @@ impl TaskManager {
             final_status, finished_at, task_id
         )
         .execute(&state.db).await?;
-
-        // Clean up TensorBoard instance after task finishes
-        if let Some((mut tb_child, _)) = state.tensorboard_instances.write().await.remove(task_id) {
-            if let Err(e) = tb_child.kill().await {
-                error!("Failed to kill TensorBoard process for task {}: {}", task_id, e);
-            }
-        }
 
         Ok(())
     }
