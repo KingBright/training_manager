@@ -64,6 +64,7 @@ askama = "0.14"
 askama_axum = "0.4"
 sysinfo = "0.36.1"
 toml = "0.9.5"
-tokio-util = "0.7.16"
+tokio-util = { version = "0.7.16", features = ["io"] }
 clap = { version = "4.5.45", features = ["derive"] }
 indicatif = "0.18.0"
+zip = "4.3.0"

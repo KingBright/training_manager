@@ -21,6 +21,10 @@ struct Args {
     /// The local directory to sync files into
     #[arg(short, long, default_value = ".")]
     dir: PathBuf,
+
+    /// The remote directory on the server to sync from
+    #[arg(long)]
+    remote_dir: Option<String>,
 }
 
 #[tokio::main]
@@ -33,11 +37,17 @@ async fn main() -> Result<()> {
     println!("IsaacLab Sync Client");
     println!("--------------------");
     println!("Server: {}", args.server);
+    if let Some(remote_dir) = &args.remote_dir {
+        println!("Remote Directory: {}", remote_dir);
+    }
     println!("Local Directory: {}", args.dir.display());
 
     // 1. Fetch server manifest
     println!("\nFetching server file manifest...");
-    let manifest_url = format!("{}/api/sync/manifest", args.server);
+    let mut manifest_url = format!("{}/api/sync/manifest", args.server);
+    if let Some(remote_dir) = &args.remote_dir {
+        manifest_url.push_str(&format!("?remote_path={}", remote_dir));
+    }
     let server_manifest = client
         .get(&manifest_url)
         .send()
@@ -99,9 +109,12 @@ async fn main() -> Result<()> {
                 .progress_chars("=> "),
         );
 
-        for (i, relative_path) in files_to_download.iter().enumerate() {
+        for (_i, relative_path) in files_to_download.iter().enumerate() {
             pb_download.set_message(relative_path.clone());
-            let download_url = format!("{}/api/sync/download/{}", args.server, relative_path);
+            let mut download_url = format!("{}/api/sync/download/{}", args.server, relative_path);
+            if let Some(remote_dir) = &args.remote_dir {
+                download_url.push_str(&format!("?remote_path={}", remote_dir));
+            }
             let local_path = args.dir.join(relative_path);
 
             if let Some(parent) = local_path.parent() {
