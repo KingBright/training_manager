@@ -305,6 +305,36 @@ async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Ve
 
 // --- Sync Handlers ---
 
+/// Resolves and validates a user-provided path against a base directory.
+/// Ensures the final path is a descendant of the base path and exists.
+fn resolve_safe_sync_path(base_path: &std::path::Path, remote_path_opt: Option<&String>) -> Result<PathBuf, AppError> {
+    let mut target_path = base_path.to_path_buf();
+
+    if let Some(remote_path_str) = remote_path_opt {
+        if !remote_path_str.is_empty() {
+            target_path.push(sanitize_path(remote_path_str));
+        }
+    }
+
+    let canonical_base = base_path.canonicalize().map_err(|e| {
+        error!("Base sync directory '{}' not found or invalid: {}", base_path.display(), e);
+        AppError::Io(e)
+    })?;
+
+    let canonical_target = target_path.canonicalize().map_err(|e| {
+        error!("Target path '{}' not found or invalid: {}", target_path.display(), e);
+        AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "The specified path does not exist."))
+    })?;
+
+    if !canonical_target.starts_with(&canonical_base) {
+        error!("Security violation: Attempt to access path '{}' which is outside of sync root '{}'", canonical_target.display(), canonical_base.display());
+        return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access denied.")));
+    }
+
+    Ok(canonical_target)
+}
+
+
 /// A utility function to sanitize a path string, removing any directory traversal components.
 fn sanitize_path(path_str: &str) -> PathBuf {
     PathBuf::from(path_str)
@@ -324,32 +354,19 @@ async fn get_sync_manifest_handler(
     Query(params): Query<SyncRequest>,
 ) -> Result<Json<HashMap<String, String>>, AppError> {
     let base_path = PathBuf::from(&state.config.sync.target_path);
-    let mut target_path = base_path.clone();
-    if let Some(remote_path_str) = &params.remote_path {
-        if !remote_path_str.is_empty() {
-            let relative_path_str = remote_path_str.strip_prefix('/').unwrap_or(remote_path_str);
-            target_path.push(sanitize_path(relative_path_str));
-        }
-    }
-
-    if !target_path.starts_with(&base_path) || !target_path.exists() || !target_path.is_dir() {
-        error!(?target_path, "Invalid or non-existent sync path specified.");
-        return Ok(Json(HashMap::new()));
-    }
+    let target_path = resolve_safe_sync_path(&base_path, params.remote_path.as_ref())?;
 
     let excludes = state.config.sync.default_excludes.clone();
-    let target_path_for_closure = target_path.clone();
-
     let manifest = tokio::task::spawn_blocking(move || {
         let exclude_patterns: Vec<glob::Pattern> = excludes
             .iter()
             .map(|s| glob::Pattern::new(s).expect("Invalid glob pattern in config"))
             .collect();
 
-        let walker = WalkDir::new(&target_path_for_closure).into_iter();
+        let walker = WalkDir::new(&target_path).into_iter();
         let filtered_walker = walker.filter_entry(|e| {
             let path = e.path();
-            let relative_path = match path.strip_prefix(&target_path_for_closure) {
+            let relative_path = match path.strip_prefix(&target_path) {
                 Ok(p) => p,
                 Err(_) => return false,
             };
@@ -364,7 +381,7 @@ async fn get_sync_manifest_handler(
             if let Ok(entry) = result {
                 let path = entry.path();
                 if path.is_file() {
-                    if let Ok(relative_path) = path.strip_prefix(&target_path_for_closure) {
+                    if let Ok(relative_path) = path.strip_prefix(&target_path) {
                         if let Ok(mut file) = File::open(path) {
                             let mut hasher = Sha256::new();
                             if std::io::copy(&mut file, &mut hasher).is_ok() {
@@ -390,37 +407,40 @@ async fn download_file_handler(
     Query(params): Query<SyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let base_path = PathBuf::from(&state.config.sync.target_path);
-    let mut target_dir = base_path.clone();
-    if let Some(remote_path_str) = &params.remote_path {
-        if !remote_path_str.is_empty() {
-            let relative_path_str = remote_path_str.strip_prefix('/').unwrap_or(remote_path_str);
-            target_dir.push(sanitize_path(relative_path_str));
+
+    let mut full_path = base_path.clone();
+    if let Some(remote_dir) = &params.remote_path {
+        if !remote_dir.is_empty() {
+            full_path.push(sanitize_path(remote_dir));
         }
     }
+    full_path.push(sanitize_path(&path));
 
-    let safe_relative_path = sanitize_path(&path);
-    let file_path = target_dir.join(&safe_relative_path);
+    let canonical_base = base_path.canonicalize().map_err(AppError::Io)?;
+    let file_path = full_path.canonicalize().map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found")))?;
 
-    if !file_path.starts_with(&base_path) {
+    if !file_path.starts_with(&canonical_base) {
         error!("Potential directory traversal attempt blocked: {:?}", path);
-        return Ok((StatusCode::FORBIDDEN, "Forbidden").into_response());
+        return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access denied.")));
     }
 
-    match tokio_fs::File::open(&file_path).await {
-        Ok(file) => {
-            let stream = ReaderStream::new(file);
-            let body = Body::from_stream(stream);
-            let headers = [
-                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{}\"", safe_relative_path.file_name().unwrap_or_default().to_string_lossy()),
-                ),
-            ];
-            Ok((headers, body).into_response())
-        }
-        Err(_) => Ok((StatusCode::NOT_FOUND, "File not found").into_response()),
+    if !file_path.is_file() {
+        return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Path is not a file")));
     }
+
+    let file = tokio_fs::File::open(&file_path).await.map_err(AppError::Io)?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let headers = [
+        (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+        (
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", file_name),
+        ),
+    ];
+    Ok((headers, body).into_response())
 }
 
 async fn download_zip_handler(
@@ -428,33 +448,20 @@ async fn download_zip_handler(
     Query(params): Query<SyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let base_path = PathBuf::from(&state.config.sync.target_path);
-    let mut target_path = base_path.clone();
-    if let Some(remote_path_str) = &params.remote_path {
-        if !remote_path_str.is_empty() {
-            let relative_path_str = remote_path_str.strip_prefix('/').unwrap_or(remote_path_str);
-            target_path.push(sanitize_path(relative_path_str));
-        }
-    }
+    let target_path = resolve_safe_sync_path(&base_path, params.remote_path.as_ref())?;
 
-    if !target_path.starts_with(&base_path) || !target_path.exists() || !target_path.is_dir() {
-        error!(?target_path, "Invalid or non-existent path for zip download.");
-        return Ok((StatusCode::NOT_FOUND, "Directory not found").into_response());
-    }
-
-    let target_path_for_closure = target_path.clone();
     let zip_buffer = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, std::io::Error> {
         let mut buffer = Vec::new();
-        // Note: Using a cursor to write to an in-memory buffer.
         let cursor = std::io::Cursor::new(&mut buffer);
         let mut zip = ZipWriter::new(cursor);
         let options = FileOptions::<'_, ()>::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o755);
 
-        let walker = WalkDir::new(target_path_for_closure.clone()).into_iter();
+        let walker = WalkDir::new(&target_path).into_iter();
         for entry in walker.filter_map(|e| e.ok()) {
             let path = entry.path();
-            let name = path.strip_prefix(&target_path_for_closure).unwrap();
+            let name = path.strip_prefix(&target_path).unwrap();
 
             if path.is_file() {
                 zip.start_file(name.to_string_lossy().into_owned(), options)?;
@@ -471,7 +478,7 @@ async fn download_zip_handler(
         Ok(buffer)
     })
     .await
-    .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+    .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
     let file_name = if let Some(remote_path) = &params.remote_path {
         let sanitized = sanitize_path(remote_path);
@@ -489,7 +496,8 @@ async fn download_zip_handler(
         ),
     ];
 
-    Ok((headers, zip_buffer).into_response())
+    let zip_data = zip_buffer?;
+    Ok((headers, zip_data).into_response())
 }
 
 
