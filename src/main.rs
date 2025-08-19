@@ -527,30 +527,60 @@ async fn download_zip_handler(
     let target_path = canonical_target;
 
     let zip_buffer = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, std::io::Error> {
-        let mut buffer = Vec::new();
-        let cursor = std::io::Cursor::new(&mut buffer);
-        let mut zip = ZipWriter::new(cursor);
-        let options = FileOptions::<'_, ()>::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .unix_permissions(0o755);
-
-        let walker = WalkDir::new(&target_path).into_iter();
-        for entry in walker.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let name = path.strip_prefix(&target_path).unwrap();
-
-            if path.is_file() {
-                zip.start_file(name.to_string_lossy().into_owned(), options)?;
-                let mut f = std::fs::File::open(path)?;
-                let mut file_buffer = Vec::new();
-                f.read_to_end(&mut file_buffer)?;
-                zip.write_all(&file_buffer)?;
-            } else if name.as_os_str().len() != 0 {
-                zip.add_directory(name.to_string_lossy().into_owned(), options)?;
+        // Find all .pt files and their modification times
+        let mut pt_files = Vec::new();
+        for entry in WalkDir::new(&target_path).into_iter().filter_map(|e| e.ok()) {
+            if entry.path().extension().map_or(false, |ext| ext == "pt") {
+                if let Ok(metadata) = entry.metadata() {
+                    if let Ok(modified) = metadata.modified() {
+                        pt_files.push((entry.path().to_path_buf(), modified));
+                    }
+                }
             }
         }
 
-        zip.finish()?;
+        // Determine the newest .pt file
+        let newest_pt_path = if !pt_files.is_empty() {
+            pt_files.sort_by(|a, b| b.1.cmp(&a.1)); // Sort descending by time
+            Some(pt_files[0].0.clone())
+        } else {
+            None
+        };
+
+        let mut buffer = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buffer);
+            let mut zip = ZipWriter::new(cursor);
+            let options = FileOptions::<'_, ()>::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(0o755);
+
+            let walker = WalkDir::new(&target_path).into_iter();
+            for entry in walker.filter_map(|e| e.ok()) {
+                let path = entry.path();
+
+                // If it's a .pt file, only include the newest one
+                if path.extension().map_or(false, |ext| ext == "pt") {
+                    if let Some(newest) = &newest_pt_path {
+                        if path != newest.as_path() {
+                            continue; // Skip this file
+                        }
+                    }
+                }
+
+                let name = path.strip_prefix(&target_path).unwrap();
+                if path.is_file() {
+                    zip.start_file(name.to_string_lossy(), options)?;
+                    let mut f = std::fs::File::open(path)?;
+                    let mut file_buffer = Vec::new();
+                    f.read_to_end(&mut file_buffer)?;
+                    zip.write_all(&file_buffer)?;
+                } else if !name.as_os_str().is_empty() {
+                    zip.add_directory(name.to_string_lossy(), options)?;
+                }
+            }
+            zip.finish()?;
+        }
         Ok(buffer)
     })
     .await
