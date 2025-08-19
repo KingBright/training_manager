@@ -449,8 +449,8 @@
                                     <button @click="viewMetrics(task.id)" class="btn">
                                         <i class="fas fa-chart-bar"></i> 指标
                                     </button>
-                                    <button v-if="task.status === 'completed'" @click="downloadOnnx(task.id)" class="btn">
-                                        <i class="fas fa-download"></i> 下载ONNX
+                                    <button v-if="task.status === 'completed' || task.status === 'failed' || task.status === 'stopped'" @click="downloadTaskOutput(task)" class="btn">
+                                        <i class="fas fa-download"></i> 下载输出
                                     </button>
                                     <button @click="copyCommand(task.command)" class="btn btn-secondary">
                                         <i class="fas fa-copy"></i> 复制命令
@@ -592,14 +592,14 @@
                             <i class="fas fa-cloud-download-alt"></i> 从服务器下载代码
                         </h3>
                         <p style="margin-bottom: 20px; color: #666;">
-                            将服务器 <code style="background: rgba(0,0,0,0.05); padding: 2px 5px; border-radius: 4px;">sync.target_path</code> 下的指定目录打包为ZIP文件并下载。
+                            将服务器上的指定目录打包为ZIP文件并下载。
                         </p>
                         <div class="form-group">
-                            <label>远程目录 (可选)</label>
+                            <label>远程目录路径 (可选)</label>
                             <input type="text" v-model="downloadRemoteDir"
-                                   placeholder="留空则下载根目录">
+                                   placeholder="输入一个绝对路径，或相对于工作目录的路径">
                             <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
-                                <i class="fas fa-info-circle"></i> 输入要下载的 <code style="background: rgba(0,0,0,0.05); padding: 2px 5px; border-radius: 4px;">sync.target_path</code> 的子目录。
+                                <i class="fas fa-info-circle"></i> 如果提供绝对路径 (以 / 开头)，将直接使用。否则，路径将被视为相对于应用程序的工作目录。
                             </small>
                         </div>
 
@@ -835,23 +835,22 @@
                         toastr.error('获取指标失败: ' + error.message);
                     }
                 },
-                async downloadOnnx(taskId) {
-                    try {
-                        const response = await axios.get(`/api/download/${taskId}/onnx`, {
-                            responseType: 'blob'
-                        });
-                        
-                        const url = window.URL.createObjectURL(new Blob([response.data]));
-                        const link = document.createElement('a');
-                        link.href = url;
-                        link.setAttribute('download', `${taskId}_policy.onnx`);
-                        document.body.appendChild(link);
-                        link.click();
-                        link.remove();
-                        window.URL.revokeObjectURL(url);
-                    } catch (error) {
-                        toastr.error('下载ONNX文件失败: ' + error.message);
+                async downloadTaskOutput(task) {
+                    if (!task.log_path) {
+                        toastr.error('该任务没有日志路径，无法确定输出目录。');
+                        return;
                     }
+                    // Assumes log_path is something like /path/to/output/task_id/task.log
+                    const directoryPath = task.log_path.substring(0, task.log_path.lastIndexOf('/'));
+                    if (!directoryPath) {
+                        toastr.error('无法从日志路径中提取目录。');
+                        return;
+                    }
+
+                    toastr.info('正在准备任务输出的ZIP文件下载...');
+                    let downloadUrl = `/api/sync/download_zip?remote_path=${encodeURIComponent(directoryPath)}`;
+
+                    window.location.href = downloadUrl;
                 },
                 async copyCommand(command) {
                     try {
