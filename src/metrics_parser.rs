@@ -40,7 +40,7 @@ pub fn parse_log_file(content: &str) -> MetricsData {
 
     let block_separator = "################################################################################";
     let iteration_regex = Regex::new(r"Learning iteration (\d+)/\d+").unwrap();
-    let metric_regex = Regex::new(r"^\s*([^:]+):\s+([-\d.]+)").unwrap();
+    let metric_regex = Regex::new(r"^\s*([^:]+):\s+(.+)").unwrap();
 
     let mut current_iteration = 0;
 
