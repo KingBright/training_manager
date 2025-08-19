@@ -23,6 +23,17 @@ const FIXED_METRICS: &[&str] = &[
     "ETA",
 ];
 
+const EXCLUDED_METRICS: &[&str] = &[
+    "physics step-size",
+    "rendering step-size",
+    "environment step-size",
+    "active action terms",
+    "environment seed",
+    "environment spacing",
+    "setting seed",
+    "number of environments",
+];
+
 pub fn parse_log_file(content: &str) -> MetricsData {
     let mut latest_fixed_metrics = HashMap::new();
     let mut historical_metrics: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
@@ -43,6 +54,12 @@ pub fn parse_log_file(content: &str) -> MetricsData {
         for line in block.lines() {
             if let Some(captures) = metric_regex.captures(line.trim()) {
                 let key = captures[1].trim().to_string();
+                let lower_key = key.to_lowercase();
+
+                if EXCLUDED_METRICS.iter().any(|&excluded| lower_key.contains(excluded)) {
+                    continue;
+                }
+
                 if let Ok(value) = captures[2].parse::<f64>() {
                     if FIXED_METRICS.contains(&key.as_str()) {
                         latest_fixed_metrics.insert(key, captures[2].to_string());
