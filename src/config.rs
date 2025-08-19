@@ -8,7 +8,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub isaaclab: IsaacLabConfig,
     pub storage: StorageConfig,
-    pub tensorboard: TensorBoardConfig,
     pub sync: SyncConfig,
     pub tasks: TaskConfig,
 }
@@ -32,12 +31,6 @@ pub struct StorageConfig {
     pub output_path: PathBuf,
     pub log_path: PathBuf,
     pub database_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TensorBoardConfig {
-    pub base_port: u16,
-    pub max_instances: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,10 +64,6 @@ impl Default for Config {
                 output_path: PathBuf::from("./outputs"),
                 log_path: PathBuf::from("./logs"),
                 database_url: "sqlite:./data/isaaclab_manager.db".to_string(),
-            },
-            tensorboard: TensorBoardConfig {
-                base_port: 6006,
-                max_instances: 10,
             },
             sync: SyncConfig {
                 target_path: PathBuf::from("/opt/isaaclab/source"),

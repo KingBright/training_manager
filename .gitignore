@@ -1,0 +1,24 @@
+# Rust
+target/
+cargo.lock
+
+# General
+.DS_Store
+*.log
+
+# Database
+*.db
+*.db-journal
+migrations/
+isaaclab_manager.db-journal
+isaaclab_manager.db-wal
+isaaclab_manager.db-shm
+
+# IDE
+.vscode/
+.idea/
+
+# Config
+config/app.toml
+config/.app.toml
+nohup.out

@@ -1,24 +1,24 @@
 [server]
 host = "0.0.0.0"
-port = 3000
+port = 6006
 
 [isaaclab]
-path = "/home/ywkj"
+path = "/home/ecs-user"
 python_executable = "python"
-conda_path = "/home/ywkj/miniconda3" # Placeholder, please verify this path
-default_conda_env = "isaaclab"
+conda_path = "/home/ecs-user/anaconda3" # Placeholder, please verify this path
+default_conda_env = "env_isaaclab"
 
 [storage]
-output_path = "/home/ywkj/outputs"
-log_path = "/home/ywkj/logs"
+output_path = "/home/ecs-user/outputs"
+log_path = "/home/ecs-user/logs"
 database_url = "sqlite:./isaaclab_manager.db"
 
 [tensorboard]
-base_port = 6006
+base_port = 6007
 max_instances = 10
 
 [sync]
-target_path = "/home/ywkj/moves"
+target_path = "/home/ecs-user/moves"
 default_excludes = [
     "__pycache__",
     "*.pyc",
@@ -27,10 +27,11 @@ default_excludes = [
     "outputs/",
     ".vscode/",
     "*.tmp",
+    ".DS_Store",
 ]
 
 [tasks]
 max_concurrent = 1
 default_headless = true
 timeout_seconds = 86400
-working_directory = "/home/ywkj"
+working_directory = "/home/ecs-user"
