@@ -490,8 +490,8 @@
                                 <div class="fixed-metrics" style="margin-bottom: 20px;">
                                     <h4>最新指标</h4>
                                     <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; margin-top: 10px;">
-                                        <div v-for="(value, key) in metrics[task.id].latest_fixed_metrics" :key="key" style="background: #fff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                                            <strong style="color: #555;">{{ key }}</strong>: <span style="color: #000; font-weight: bold;">{{ value }}</span>
+                                        <div v-for="metric in sortedMetrics[task.id] ? sortedMetrics[task.id].latest : []" :key="metric.key" style="background: #fff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                                            <strong style="color: #555;">{{ metric.key }}</strong>: <span style="color: #000; font-weight: bold;">{{ metric.value }}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -630,6 +630,7 @@
                     logs: {},
                     showMetrics: {},
                     metrics: {},
+                    sortedMetrics: {},
                     charts: {},
                     newTask: {
                         command: '',
@@ -778,39 +779,54 @@
                 async refreshMetrics(taskId) {
                     try {
                         const response = await axios.get(`/api/tasks/${taskId}/metrics`);
-                        this.metrics[taskId] = response.data;
+                        const rawMetrics = response.data;
+                        this.metrics[taskId] = rawMetrics;
+
+                        // Sort and store latest metrics
+                        const sortedLatest = Object.keys(rawMetrics.latest_fixed_metrics)
+                            .sort()
+                            .map(key => ({ key, value: rawMetrics.latest_fixed_metrics[key] }));
+
+                        // Sort and store historical metric keys
+                        const sortedHistoricalKeys = Object.keys(rawMetrics.historical_metrics).sort();
+
+                        this.sortedMetrics[taskId] = {
+                            latest: sortedLatest,
+                            historicalKeys: sortedHistoricalKeys
+                        };
 
                         // Wait for the DOM to update
                         await this.$nextTick();
 
-                        // Clear previous charts for this task
+                        // --- Chart Rendering ---
                         if (this.charts[taskId]) {
                             this.charts[taskId].forEach(chart => chart.destroy());
                         }
                         this.charts[taskId] = [];
 
                         const container = document.getElementById(`charts-container-${taskId}`);
-                        container.innerHTML = ''; // Clear previous chart canvases
+                        container.innerHTML = '';
 
-                        const historicalMetrics = this.metrics[taskId].historical_metrics;
-                        if (Object.keys(historicalMetrics).length === 0) {
-                            container.innerHTML = '<p style=\"color: #666;\">没有可用的历史指标。</p>';
+                        if (sortedHistoricalKeys.length === 0) {
+                            container.innerHTML = '<p style="color: #666;">没有可用的历史指标。</p>';
                             return;
                         }
 
-                        for (const key in historicalMetrics) {
+                        for (const key of sortedHistoricalKeys) {
                             const canvas = document.createElement('canvas');
                             canvas.style.marginTop = '20px';
                             container.appendChild(canvas);
 
                             const ctx = canvas.getContext('2d');
+                            const chartData = rawMetrics.historical_metrics[key];
+
                             const chart = new Chart(ctx, {
                                 type: 'line',
                                 data: {
-                                    labels: historicalMetrics[key].map(d => d[0]),
+                                    labels: chartData.map(d => d[0]),
                                     datasets: [{
                                         label: key,
-                                        data: historicalMetrics[key].map(d => d[1]),
+                                        data: chartData.map(d => d[1]),
                                         borderColor: `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 1)`,
                                         borderWidth: 2,
                                         fill: false,
@@ -819,12 +835,8 @@
                                 },
                                 options: {
                                     scales: {
-                                        x: {
-                                            title: { display: true, text: 'Iteration' }
-                                        },
-                                        y: {
-                                            title: { display: true, text: 'Value' }
-                                        }
+                                        x: { title: { display: true, text: 'Iteration' } },
+                                        y: { title: { display: true, text: 'Value' } }
                                     }
                                 }
                             });
