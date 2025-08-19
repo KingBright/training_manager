@@ -52,6 +52,7 @@ enum Commands {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let client = Client::builder()
+        .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(600)) // 10 minute timeout for large files
         .build()?;
 
@@ -71,9 +72,13 @@ async fn handle_download(client: &Client, server: &str, remote_path: &str, local
     println!("\nDownloading directory '{}'...", remote_path);
     println!("Target local path: {}", local_path.display());
 
-    let download_url = format!("{}/api/sync/download_zip?remote_path={}", server, remote_path);
-
-    let mut response = client.get(&download_url).send().await?.error_for_status()?;
+    let url = format!("{}/api/sync/download_zip", server);
+    let mut response = client
+        .get(url)
+        .query(&[("remote_path", remote_path)])
+        .send()
+        .await?
+        .error_for_status()?;
 
     let total_size = response.content_length().unwrap_or(0);
     let pb = ProgressBar::new(total_size);
@@ -136,12 +141,12 @@ async fn handle_sync(client: &Client, server: &str, dir: &Path, remote_dir: Opti
 
     // 1. Fetch server manifest
     println!("\nFetching server file manifest...");
-    let mut manifest_url = format!("{}/api/sync/manifest", server);
-    if let Some(remote_dir) = remote_dir {
-        manifest_url.push_str(&format!("?remote_path={}", remote_dir));
+    let manifest_url = format!("{}/api/sync/manifest", server);
+    let mut request = client.get(&manifest_url);
+    if let Some(rd) = remote_dir {
+        request = request.query(&[("remote_path", rd)]);
     }
-    let server_manifest = client
-        .get(&manifest_url)
+    let server_manifest = request
         .send()
         .await?
         .error_for_status()?
@@ -203,17 +208,20 @@ async fn handle_sync(client: &Client, server: &str, dir: &Path, remote_dir: Opti
 
         for (_i, relative_path) in files_to_download.iter().enumerate() {
             pb_download.set_message(relative_path.clone());
-            let mut download_url = format!("{}/api/sync/download/{}", server, relative_path);
-            if let Some(remote_dir) = remote_dir {
-                download_url.push_str(&format!("?remote_path={}", remote_dir));
+            let download_url = format!("{}/api/sync/download/{}", server, relative_path);
+
+            let mut request = client.get(&download_url);
+            if let Some(rd) = remote_dir {
+                request = request.query(&[("remote_path", rd)]);
             }
+
             let local_path = dir.join(relative_path);
 
             if let Some(parent) = local_path.parent() {
                 tokio_fs::create_dir_all(parent).await?;
             }
 
-            let mut response = client.get(&download_url).send().await?.error_for_status()?;
+            let mut response = request.send().await?.error_for_status()?;
             let mut file = File::create(&local_path)?;
 
             while let Some(chunk) = response.chunk().await? {
