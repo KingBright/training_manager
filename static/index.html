@@ -340,11 +340,66 @@
                 <div class="tab" :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">
                     <i class="fas fa-tasks"></i> 任务管理
                 </div>
+                <div class="tab" :class="{ active: activeTab === 'metrics' }" @click="activeTab = 'metrics'">
+                    <i class="fas fa-chart-line"></i> 训练指标
+                </div>
                 <div class="tab" :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">
                     <i class="fas fa-sync-alt"></i> 代码同步
                 </div>
                 <div class="tab" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">
                     <i class="fas fa-cog"></i> 系统配置
+                </div>
+            </div>
+
+            <!-- 训练指标面板 -->
+            <div v-show="activeTab === 'metrics'">
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2><i class="fas fa-chart-line"></i> 训练指标</h2>
+                         <button v-if="activeMetricTask" @click="refreshMetrics(activeMetricTask)" class="btn btn-secondary"><i class="fas fa-sync-alt"></i> 刷新指标</button>
+                    </div>
+
+                    <!-- Sub-tabs for running tasks -->
+                    <div class="tabs" v-if="runningTasks.length > 0" style="margin-bottom: 30px;">
+                        <div class="tab"
+                             v-for="task in runningTasks"
+                             :key="task.id"
+                             :class="{ active: activeMetricTask === task.id }"
+                             @click="setActiveMetricTask(task.id)">
+                            <i class="fas fa-robot"></i> {{ task.name }}
+                        </div>
+                    </div>
+                    <div v-else style="text-align: center; color: #666; padding: 40px;">
+                        <i class="fas fa-running" style="font-size: 3rem; opacity: 0.3; margin-bottom: 20px;"></i><br>
+                        当前没有正在运行的训练任务。
+                    </div>
+
+                    <!-- Metrics Content -->
+                    <div v-if="activeMetricTask" class="metrics-viewer" style="margin-top: 20px; background: #f8f9fa; padding: 20px; border-radius: 12px;">
+                        <div v-if="!metrics[activeMetricTask]">正在加载指标...</div>
+                        <div v-else>
+                            <!-- Latest Fixed Metrics -->
+                            <div class="fixed-metrics" style="margin-bottom: 20px;">
+                                <h4>最新指标</h4>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; margin-top: 10px;">
+                                    <div v-for="metric in sortedMetrics[activeMetricTask] ? sortedMetrics[activeMetricTask].latest : []" :key="metric.key" style="background: #fff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                                        <strong style="color: #555;">{{ metric.key }}</strong>: <span style="color: #000; font-weight: bold;">{{ metric.value }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Historical Metrics Charts -->
+                            <div class="historical-metrics">
+                                <h4>历史指标</h4>
+                                <div id="charts-container-metrics-tab" style="margin-top: 10px;">
+                                    <!-- Charts will be dynamically inserted here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                     <div v-if="runningTasks.length > 0 && !activeMetricTask" style="text-align: center; color: #666; padding: 40px;">
+                        <i class="fas fa-mouse-pointer" style="font-size: 3rem; opacity: 0.3; margin-bottom: 20px;"></i><br>
+                        请从上方选择一个正在运行的任务以查看其指标。
+                    </div>
                 </div>
             </div>
 
@@ -478,32 +533,6 @@
                             </div>
                         </div>
 
-                        <!-- Metrics Viewer -->
-                        <div v-if="showMetrics[task.id]" class="metrics-viewer" style="margin-top: 20px; background: #f8f9fa; padding: 20px; border-radius: 12px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                                <h3 style="color: #333;"><i class="fas fa-chart-bar"></i> 训练指标 - {{ task.name }}</h3>
-                                <button @click="refreshMetrics(task.id)" class="btn btn-secondary"><i class="fas fa-sync-alt"></i> 刷新指标</button>
-                            </div>
-                            <div v-if="!metrics[task.id]">正在加载指标...</div>
-                            <div v-else>
-                                <!-- Latest Fixed Metrics -->
-                                <div class="fixed-metrics" style="margin-bottom: 20px;">
-                                    <h4>最新指标</h4>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; margin-top: 10px;">
-                                        <div v-for="metric in sortedMetrics[task.id] ? sortedMetrics[task.id].latest : []" :key="metric.key" style="background: #fff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                                            <strong style="color: #555;">{{ metric.key }}</strong>: <span style="color: #000; font-weight: bold;">{{ metric.value }}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <!-- Historical Metrics Charts -->
-                                <div class="historical-metrics">
-                                    <h4>历史指标</h4>
-                                    <div :id="'charts-container-' + task.id" style="margin-top: 10px;">
-                                        <!-- Charts will be dynamically inserted here -->
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -680,12 +709,12 @@
             data() {
                 return {
                     activeTab: 'tasks',
+                    activeMetricTask: null,
                     tasks: [],
                     queue: [],
                     condaEnvs: [],
                     showLogs: {},
                     logs: {},
-                    showMetrics: {},
                     metrics: {},
                     sortedMetrics: {},
                     charts: {},
@@ -734,6 +763,10 @@
                 }, 5000);
             },
             methods: {
+                setActiveMetricTask(taskId) {
+                    this.activeMetricTask = taskId;
+                    this.refreshMetrics(taskId);
+                },
                 async loadConfig() {
                     try {
                         const response = await axios.get('/api/config');
@@ -867,10 +900,8 @@
                     }
                 },
                 async viewMetrics(taskId) {
-                    this.showMetrics[taskId] = !this.showMetrics[taskId];
-                    if (this.showMetrics[taskId]) {
-                        await this.refreshMetrics(taskId);
-                    }
+                    this.activeTab = 'metrics';
+                    this.setActiveMetricTask(taskId);
                 },
                 async refreshMetrics(taskId) {
                     try {
@@ -900,7 +931,14 @@
                         }
                         this.charts[taskId] = [];
 
-                        const container = document.getElementById(`charts-container-${taskId}`);
+                        const containerId = this.activeTab === 'metrics' ? 'charts-container-metrics-tab' : `charts-container-${taskId}`;
+                        const container = document.getElementById(containerId);
+
+                        if (!container) {
+                            console.warn(`Chart container #${containerId} not found, aborting render.`);
+                            return;
+                        }
+
                         container.innerHTML = '';
 
                         if (sortedHistoricalKeys.length === 0) {
@@ -924,9 +962,10 @@
                                         label: key,
                                         data: chartData.map(d => d[1]),
                                         borderColor: `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 1)`,
-                                        borderWidth: 2,
+                                        borderWidth: 1,
                                         fill: false,
-                                        tension: 0.1
+                                        tension: 0.1,
+                                        pointRadius: 0,
                                     }]
                                 },
                                 options: {
