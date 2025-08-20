@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum_extra::extract::{multipart::MultipartError, Multipart};
+use axum::extract::{multipart::MultipartError, Multipart};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{migrate::MigrateDatabase, Sqlite, SqlitePool};
@@ -650,7 +650,7 @@ async fn sync_code_handler(
     
     let mut files_written = 0;
     while let Some(field) = multipart.next_field().await? {
-        if let Some(relative_path_str) = field.file_name() {
+        if let Some(relative_path_str) = field.name() {
             let relative_path = PathBuf::from(relative_path_str)
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))
