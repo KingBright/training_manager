@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
         .route("/api/conda/envs", get(get_conda_envs_handler))
         .route("/api/queue", get(get_queue_handler))
         .route("/api/config", get(get_config_handler).post(update_config_handler))
-        .route("/api/sync", post(sync_code_handler))
+        .route("/api/sync", post(sync_code_handler).layer(DefaultBodyLimit::max(10 * 1024 * 1024)))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
         .route("/api/sync/download/{*path}", get(download_file_handler))
