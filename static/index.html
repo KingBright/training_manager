@@ -626,14 +626,6 @@
 
                         <h3 style="margin-top: 30px; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px;">IsaacLab 配置</h3>
                         <div class="form-group">
-                            <label>IsaacLab 路径</label>
-                            <input type="text" v-model="configData.isaaclab.path" required>
-                        </div>
-                        <div class="form-group">
-                            <label>Python 可执行文件</label>
-                            <input type="text" v-model="configData.isaaclab.python_executable" required>
-                        </div>
-                        <div class="form-group">
                             <label>Conda 路径</label>
                             <input type="text" v-model="configData.isaaclab.conda_path" required>
                         </div>
@@ -647,20 +639,6 @@
                             <label>输出路径</label>
                             <input type="text" v-model="configData.storage.output_path" required>
                         </div>
-                        <div class="form-group">
-                            <label>日志路径</label>
-                            <input type="text" v-model="configData.storage.log_path" required>
-                        </div>
-
-                        <h3 style="margin-top: 30px; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px;">TensorBoard 配置</h3>
-                        <div class="form-group">
-                            <label>基础端口</label>
-                            <input type="number" v-model.number="configData.tensorboard.base_port" required>
-                        </div>
-                        <div class="form-group">
-                            <label>最大实例数</label>
-                            <input type="number" v-model.number="configData.tensorboard.max_instances" required>
-                        </div>
 
                         <h3 style="margin-top: 30px; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px;">同步配置</h3>
                         <div class="form-group">
@@ -673,18 +651,6 @@
                         </div>
 
                         <h3 style="margin-top: 30px; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px;">任务配置</h3>
-                        <div class="form-group">
-                            <label>最大并发任务数</label>
-                            <input type="number" v-model.number="configData.tasks.max_concurrent" required>
-                        </div>
-                         <div class="checkbox-group" style="margin-bottom: 20px;">
-                            <input type="checkbox" v-model="configData.tasks.default_headless" id="headless-checkbox">
-                            <label for="headless-checkbox" style="font-weight: normal;">默认无头模式 (Headless)</label>
-                        </div>
-                        <div class="form-group">
-                            <label>任务超时时间 (秒)</label>
-                            <input type="number" v-model.number="configData.tasks.timeout_seconds" required>
-                        </div>
                         <div class="form-group">
                             <label>默认工作目录</label>
                             <input type="text" v-model="configData.tasks.working_directory" required>
@@ -751,12 +717,12 @@
                     );
                 }
             },
-            mounted() {
+            async mounted() {
+                await this.loadConfig();
                 this.loadTasks();
                 this.loadQueue();
                 this.loadCondaEnvs();
                 this.loadSyncConfig();
-                this.loadConfig();
                 setInterval(() => {
                     this.loadTasks();
                     this.loadQueue();
@@ -783,9 +749,11 @@
                         this.configData.sync.default_excludes = JSON.parse(this.default_excludes_json);
 
                         await axios.post('/api/config', this.configData);
-                        toastr.success('配置已成功保存！重启服务后将完全生效。');
+                        toastr.success('配置已成功保存！');
                         // Reload config to ensure data is fresh from the backend
                         await this.loadConfig();
+                        // Explicitly update the conda env in the form to reflect the change
+                        this.newTask.condaEnv = this.configData.isaaclab.default_conda_env;
                     } catch (error) {
                         let errorMessage = '保存配置失败: ';
                         if (error instanceof SyntaxError) {
@@ -822,8 +790,12 @@
                     try {
                         const response = await axios.get('/api/conda/envs');
                         this.condaEnvs = response.data;
-                        if (this.condaEnvs.length > 0) {
-                            this.newTask.condaEnv = this.condaEnvs.find(env => env.includes('isaaclab')) || this.condaEnvs[0];
+                        // Use the default from configData now that it's loaded first
+                        if (this.configData?.isaaclab?.default_conda_env) {
+                            this.newTask.condaEnv = this.configData.isaaclab.default_conda_env;
+                        } else if (this.condaEnvs.length > 0) {
+                            // Fallback just in case
+                            this.newTask.condaEnv = this.condaEnvs[0];
                         }
                     } catch (error) {
                         console.error('加载Conda环境失败:', error);
@@ -853,7 +825,7 @@
                         
                         this.newTask = {
                             command: '',
-                            condaEnv: this.condaEnvs.find(env => env.includes('isaaclab')) || this.condaEnvs[0] || '',
+                            condaEnv: this.configData.isaaclab.default_conda_env,
                             workingDir: '',
                         };
                         

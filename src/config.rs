@@ -10,7 +10,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub isaaclab: IsaacLabConfig,
     pub storage: StorageConfig,
-    pub tensorboard: TensorBoardConfig,
     pub sync: SyncConfig,
     pub tasks: TaskConfig,
 }
@@ -23,8 +22,6 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IsaacLabConfig {
-    pub path: PathBuf,
-    pub python_executable: String,
     pub conda_path: PathBuf,
     pub default_conda_env: String,
 }
@@ -32,15 +29,8 @@ pub struct IsaacLabConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub output_path: PathBuf,
-    pub log_path: PathBuf,
-    pub database_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TensorBoardConfig {
-    pub base_port: u16,
-    pub max_instances: u32,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
@@ -50,9 +40,6 @@ pub struct SyncConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskConfig {
-    pub max_concurrent: u32,
-    pub default_headless: bool,
-    pub timeout_seconds: u64,
     pub working_directory: PathBuf,
 }
 
@@ -64,19 +51,11 @@ impl Default for Config {
                 port: 6006,
             },
             isaaclab: IsaacLabConfig {
-                path: PathBuf::from("/home/ecs-user"),
-                python_executable: "python".to_string(),
                 conda_path: PathBuf::from("/home/ecs-user/anaconda3"),
                 default_conda_env: "isaaclab".to_string(),
             },
             storage: StorageConfig {
                 output_path: PathBuf::from("/home/ecs-user/outputs"),
-                log_path: PathBuf::from("/home/ecs-user/logs"),
-                database_url: "sqlite:./isaaclab_manager.db".to_string(),
-            },
-            tensorboard: TensorBoardConfig {
-                base_port: 6007,
-                max_instances: 10,
             },
             sync: SyncConfig {
                 target_path: PathBuf::from("/home/ecs-user/moves"),
@@ -93,9 +72,6 @@ impl Default for Config {
                 ],
             },
             tasks: TaskConfig {
-                max_concurrent: 1,
-                default_headless: true,
-                timeout_seconds: 86400,
                 working_directory: PathBuf::from("/home/ecs-user"),
             },
         }
@@ -133,13 +109,6 @@ impl Config {
                     .unwrap_or(default_config.server.port),
             },
             isaaclab: IsaacLabConfig {
-                path: db_config
-                    .remove("isaaclab_path")
-                    .map(PathBuf::from)
-                    .unwrap_or(default_config.isaaclab.path),
-                python_executable: db_config
-                    .remove("isaaclab_python_executable")
-                    .unwrap_or(default_config.isaaclab.python_executable),
                 conda_path: db_config
                     .remove("isaaclab_conda_path")
                     .map(PathBuf::from)
@@ -153,21 +122,6 @@ impl Config {
                     .remove("storage_output_path")
                     .map(PathBuf::from)
                     .unwrap_or(default_config.storage.output_path),
-                log_path: db_config
-                    .remove("storage_log_path")
-                    .map(PathBuf::from)
-                    .unwrap_or(default_config.storage.log_path),
-                database_url: default_config.storage.database_url,
-            },
-            tensorboard: TensorBoardConfig {
-                base_port: db_config
-                    .remove("tensorboard_base_port")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(default_config.tensorboard.base_port),
-                max_instances: db_config
-                    .remove("tensorboard_max_instances")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(default_config.tensorboard.max_instances),
             },
             sync: SyncConfig {
                 target_path: db_config
@@ -180,18 +134,6 @@ impl Config {
                     .unwrap_or(default_config.sync.default_excludes),
             },
             tasks: TaskConfig {
-                max_concurrent: db_config
-                    .remove("tasks_max_concurrent")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(default_config.tasks.max_concurrent),
-                default_headless: db_config
-                    .remove("tasks_default_headless")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(default_config.tasks.default_headless),
-                timeout_seconds: db_config
-                    .remove("tasks_timeout_seconds")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(default_config.tasks.timeout_seconds),
                 working_directory: db_config
                     .remove("tasks_working_directory")
                     .map(PathBuf::from)
@@ -213,20 +155,12 @@ impl Config {
 
         sqlx::query(query_str).bind("server_host").bind(&self.server.host).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("server_port").bind(self.server.port.to_string()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("isaaclab_path").bind(self.isaaclab.path.to_string_lossy()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("isaaclab_python_executable").bind(&self.isaaclab.python_executable).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("isaaclab_conda_path").bind(self.isaaclab.conda_path.to_string_lossy()).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("isaaclab_default_conda_env").bind(&self.isaaclab.default_conda_env).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("storage_output_path").bind(self.storage.output_path.to_string_lossy()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("storage_log_path").bind(self.storage.log_path.to_string_lossy()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("tensorboard_base_port").bind(self.tensorboard.base_port.to_string()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("tensorboard_max_instances").bind(self.tensorboard.max_instances.to_string()).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("sync_target_path").bind(self.sync.target_path.to_string_lossy()).execute(&mut *tx).await?;
         let excludes_json = serde_json::to_string(&self.sync.default_excludes)?;
         sqlx::query(query_str).bind("sync_default_excludes").bind(&excludes_json).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("tasks_max_concurrent").bind(self.tasks.max_concurrent.to_string()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("tasks_default_headless").bind(self.tasks.default_headless.to_string()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("tasks_timeout_seconds").bind(self.tasks.timeout_seconds.to_string()).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("tasks_working_directory").bind(self.tasks.working_directory.to_string_lossy()).execute(&mut *tx).await?;
 
         tx.commit().await?;
@@ -234,9 +168,6 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if !self.isaaclab.path.exists() {
-            anyhow::bail!("IsaacLab path does not exist: {:?}", self.isaaclab.path);
-        }
         if !self.isaaclab.conda_path.exists() {
             anyhow::bail!("Conda path does not exist: {:?}", self.isaaclab.conda_path);
         }
@@ -245,14 +176,6 @@ impl Config {
             anyhow::bail!("Conda script not found: {:?}", conda_script);
         }
         std::fs::create_dir_all(&self.storage.output_path)?;
-        std::fs::create_dir_all(&self.storage.log_path)?;
-
-        let db_path_str = self.storage.database_url.strip_prefix("sqlite:").unwrap_or(&self.storage.database_url);
-        if let Some(parent) = PathBuf::from(db_path_str).parent() {
-            if !parent.as_os_str().is_empty() {
-                 std::fs::create_dir_all(parent)?;
-            }
-        }
         Ok(())
     }
 }

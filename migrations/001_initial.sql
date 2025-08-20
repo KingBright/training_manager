@@ -32,11 +32,8 @@ CREATE TABLE config (
 
 -- 插入默认配置
 INSERT INTO config (key, value, updated_at) VALUES 
-('isaaclab_path', '/opt/isaaclab', datetime('now')),
 ('output_path', './outputs', datetime('now')),
-('tensorboard_base_port', '6006', datetime('now')),
-('sync_target_path', '/opt/isaaclab/source', datetime('now')),
-('max_concurrent_tasks', '1', datetime('now'));
+('sync_target_path', '/opt/isaaclab/source', datetime('now'));
 
 -- 创建索引
 CREATE INDEX idx_tasks_status ON tasks(status);
