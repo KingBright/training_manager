@@ -1,13 +1,13 @@
 use anyhow::Result;
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use axum_extra::extract::{multipart::MultipartError, Multipart};
+use axum::extract::{multipart::MultipartError, Multipart};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{migrate::MigrateDatabase, Sqlite, SqlitePool};
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
         .route("/api/conda/envs", get(get_conda_envs_handler))
         .route("/api/queue", get(get_queue_handler))
         .route("/api/config", get(get_config_handler).post(update_config_handler))
-        .route("/api/sync", post(sync_code_handler))
+        .route("/api/sync", post(sync_code_handler).layer(DefaultBodyLimit::max(10 * 1024 * 1024)))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
         .route("/api/sync/download/{*path}", get(download_file_handler))
@@ -650,7 +650,7 @@ async fn sync_code_handler(
     
     let mut files_written = 0;
     while let Some(field) = multipart.next_field().await? {
-        if let Some(relative_path_str) = field.file_name() {
+        if let Some(relative_path_str) = field.name() {
             let relative_path = PathBuf::from(relative_path_str)
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))
