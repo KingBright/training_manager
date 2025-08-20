@@ -369,7 +369,7 @@
                             <i class="fas fa-robot"></i> {{ task.name }}
                         </div>
                     </div>
-                    <div v-else style="text-align: center; color: #666; padding: 40px;">
+                    <div v-if="runningTasks.length === 0 && !activeMetricTask" style="text-align: center; color: #666; padding: 40px;">
                         <i class="fas fa-running" style="font-size: 3rem; opacity: 0.3; margin-bottom: 20px;"></i><br>
                         当前没有正在运行的训练任务。
                     </div>
@@ -926,8 +926,12 @@
                         await this.$nextTick();
 
                         // --- Chart Rendering ---
-                        if (this.charts[taskId]) {
-                            this.charts[taskId].forEach(chart => chart.destroy());
+                        if (this.charts[taskId] && Array.isArray(this.charts[taskId])) {
+                            this.charts[taskId].forEach(chart => {
+                                if (chart && typeof chart.destroy === 'function') {
+                                    chart.destroy();
+                                }
+                            });
                         }
                         this.charts[taskId] = [];
 
@@ -1040,15 +1044,16 @@
                     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
                 },
                 async syncCode() {
-                    let initialFiles = this.filteredSyncFiles;
+                    // Filter out 0-byte files (directories) which can cause backend parsing errors.
+                    let initialFiles = this.filteredSyncFiles.filter(f => f.size > 0);
+
                     if (initialFiles.length === 0) {
-                        toastr.warning('没有需要同步的文件 (可能所有文件都被排除了)');
+                        toastr.warning('没有需要同步的文件 (可能所有文件都被排除了或为空目录)。');
                         return;
                     }
 
                     this.isSyncing = true;
-                    this.syncResult = "--- 增量同步日志 ---\
-";
+                    this.syncResult = "--- 同步日志 ---\n";
 
                     try {
                         // Find the common base path from the first file's relative path
@@ -1062,47 +1067,46 @@
                                 relativePath = relativePath.substring(basePath.length + 1);
                             }
                             return { file: file, relativePath: relativePath };
-                        });
+                        }).filter(item => item.relativePath); // Also filter out items with no relative path
 
-                        // 1. Fetch server manifest
-                        this.syncResult += "1. 获取服务端文件清单...\n";
-                        const manifestResponse = await axios.get('/api/sync/manifest');
-                        const serverManifest = manifestResponse.data;
-                        this.syncResult += `   - 服务端存在 ${Object.keys(serverManifest).length} 个文件。\n`;
+                        let filesToUpload = [];
+                        const cryptoAvailable = window.crypto && window.crypto.subtle;
 
-                        // 2. Calculate local hashes and find files to upload
-                        this.syncResult += "2. 计算本地文件哈希并比对差异...\n";
-                        const filesToUpload = [];
-                        let skippedCount = 0;
+                        if (cryptoAvailable) {
+                            this.syncResult += "1. 获取服务端文件清单...\n";
+                            const manifestResponse = await axios.get('/api/sync/manifest');
+                            const serverManifest = manifestResponse.data;
+                            this.syncResult += `   - 服务端存在 ${Object.keys(serverManifest).length} 个文件。\n`;
 
-                        for (const item of filesWithCorrectedPaths) {
-                            const path = item.relativePath;
-                            if (!path) continue; // Skip if path is empty after stripping
+                            this.syncResult += "2. 计算本地文件哈希并比对差异 (增量同步)...\n";
+                            let skippedCount = 0;
 
-                            const localHash = await this.getFileHash(item.file);
-
-                            if (serverManifest[path] === localHash) {
-                                this.syncResult += `   - [跳过] ${path} (未更改)\n`;
-                                skippedCount++;
-                            } else {
-                                this.syncResult += `   - [待上传] ${path} (新增或已更改)\n`;
-                                filesToUpload.push(item);
+                            for (const item of filesWithCorrectedPaths) {
+                                const localHash = await this.getFileHash(item.file);
+                                if (serverManifest[item.relativePath] === localHash) {
+                                    this.syncResult += `   - [跳过] ${item.relativePath} (未更改)\n`;
+                                    skippedCount++;
+                                } else {
+                                    this.syncResult += `   - [待上传] ${item.relativePath} (新增或已更改)\n`;
+                                    filesToUpload.push(item);
+                                }
                             }
+                            this.syncResult += `\n比对完成。共 ${skippedCount} 个文件已是最新，${filesToUpload.length} 个文件需要同步。\n`;
+                        } else {
+                            this.syncResult += "警告: 无法使用加密API (可能由于非HTTPS环境)。\n将跳过哈希校验，直接同步所有文件 (全量同步)。\n";
+                            toastr.warning("无法进行增量哈希校验，将进行全量同步。");
+                            filesToUpload = [...filesWithCorrectedPaths];
                         }
 
-                        this.syncResult += `\n比对完成。共 ${skippedCount} 个文件已是最新，${filesToUpload.length} 个文件需要同步。\n`;
-
                         if (filesToUpload.length === 0) {
-                            this.syncResult += "\n所有文件均已同步，无需上传。";
+                            this.syncResult += "\n所有文件均已是最新，无需上传。";
                             this.isSyncing = false;
-                            // Clear file input after successful sync
                             document.querySelector('input[type=file]').value = '';
                             this.syncConfig.files = [];
                             return;
                         }
 
-                        // 3. Upload changed files
-                        this.syncResult += "\n3. 开始上传差异文件...\n";
+                        this.syncResult += "\n3. 开始上传文件...\n";
                         const formData = new FormData();
                         for (const item of filesToUpload) {
                             formData.append('files', item.file, item.relativePath);
@@ -1112,12 +1116,25 @@
                             headers: { 'Content-Type': 'multipart/form-data' },
                             onUploadProgress: (progressEvent) => {
                                 const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                                this.syncResult = this.syncResult.split('UPLOADING...')[0] + `UPLOADING... ${percentCompleted}%`;
+                                // Avoid creating a new line for progress updates
+                                const lines = this.syncResult.split('\n');
+                                if (lines[lines.length - 1].startsWith('UPLOADING...')) {
+                                    lines[lines.length - 1] = `UPLOADING... ${percentCompleted}%`;
+                                    this.syncResult = lines.join('\n');
+                                } else {
+                                    this.syncResult += `UPLOADING... ${percentCompleted}%\n`;
+                                }
                             }
                         });
 
-                        this.syncResult += "\n" + (response.data.message || '同步完成');
-                        toastr.success('增量同步成功！');
+                        const lines = this.syncResult.split('\n');
+                        if (lines[lines.length - 1].startsWith('UPLOADING...')) {
+                            lines.pop();
+                            this.syncResult = lines.join('\n') + '\n';
+                        }
+
+                        this.syncResult += (response.data.message || '同步完成');
+                        toastr.success('同步成功！');
 
                     } catch (error) {
                         const errorMessage = '同步失败: ' + (error.response?.data?.error || error.message);
@@ -1125,7 +1142,6 @@
                         toastr.error(errorMessage);
                     } finally {
                         this.isSyncing = false;
-                        // Clear file input after sync attempt
                         document.querySelector('input[type=file]').value = '';
                         this.syncConfig.files = [];
                     }
