@@ -1,13 +1,16 @@
 // src/config.rs
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub isaaclab: IsaacLabConfig,
     pub storage: StorageConfig,
+    pub tensorboard: TensorBoardConfig,
     pub sync: SyncConfig,
     pub tasks: TaskConfig,
 }
@@ -34,6 +37,12 @@ pub struct StorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TensorBoardConfig {
+    pub base_port: u16,
+    pub max_instances: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
     pub target_path: PathBuf,
     pub default_excludes: Vec<String>,
@@ -52,21 +61,25 @@ impl Default for Config {
         Self {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
-                port: 3000,
+                port: 6006,
             },
             isaaclab: IsaacLabConfig {
-                path: PathBuf::from("/opt/isaaclab"),
+                path: PathBuf::from("/home/ecs-user"),
                 python_executable: "python".to_string(),
-                conda_path: PathBuf::from("/opt/miniconda3"),
-                default_conda_env: "isaaclab".to_string(),
+                conda_path: PathBuf::from("/home/ecs-user/anaconda3"),
+                default_conda_env: "env_isaaclab".to_string(),
             },
             storage: StorageConfig {
-                output_path: PathBuf::from("./outputs"),
-                log_path: PathBuf::from("./logs"),
-                database_url: "sqlite:./data/isaaclab_manager.db".to_string(),
+                output_path: PathBuf::from("/home/ecs-user/outputs"),
+                log_path: PathBuf::from("/home/ecs-user/logs"),
+                database_url: "sqlite:./isaaclab_manager.db".to_string(),
+            },
+            tensorboard: TensorBoardConfig {
+                base_port: 6007,
+                max_instances: 10,
             },
             sync: SyncConfig {
-                target_path: PathBuf::from("/opt/isaaclab/source"),
+                target_path: PathBuf::from("/home/ecs-user/moves"),
                 default_excludes: vec![
                     "__pycache__".to_string(),
                     "*.pyc".to_string(),
@@ -75,90 +88,170 @@ impl Default for Config {
                     "outputs/".to_string(),
                     ".vscode/".to_string(),
                     "*.tmp".to_string(),
+                    ".DS_Store".to_string(),
                 ],
             },
             tasks: TaskConfig {
                 max_concurrent: 1,
                 default_headless: true,
-                timeout_seconds: 86400, // 24 hours
-                working_directory: std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("/tmp")),
+                timeout_seconds: 86400,
+                working_directory: PathBuf::from("/home/ecs-user"),
             },
         }
     }
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
-        // 尝试从配置文件加载
-        if let Ok(config_str) = std::fs::read_to_string("config/app.toml") {
-            match toml::from_str(&config_str) {
-                Ok(config) => return Ok(config),
-                Err(e) => tracing::warn!("Failed to parse config file: {}", e),
-            }
+    pub async fn load(db: &SqlitePool) -> Result<Self> {
+        let rows = sqlx::query("SELECT key, value FROM config")
+            .fetch_all(db)
+            .await?;
+
+        if rows.is_empty() {
+            tracing::info!("No configuration found in database. Loading defaults and saving.");
+            let config = Self::default();
+            config.save_to_db(db).await?;
+            return Ok(config);
         }
 
-        // 尝试从环境变量加载
-        let mut config = Self::default();
+        let mut db_config = rows
+            .into_iter()
+            .map(|row| (row.get::<String, _>("key"), row.get::<String, _>("value")))
+            .collect::<HashMap<String, String>>();
+
+        let default_config = Self::default();
+
+        let config = Self {
+            server: ServerConfig {
+                host: db_config
+                    .remove("server_host")
+                    .unwrap_or(default_config.server.host),
+                port: db_config
+                    .remove("server_port")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.server.port),
+            },
+            isaaclab: IsaacLabConfig {
+                path: db_config
+                    .remove("isaaclab_path")
+                    .map(PathBuf::from)
+                    .unwrap_or(default_config.isaaclab.path),
+                python_executable: db_config
+                    .remove("isaaclab_python_executable")
+                    .unwrap_or(default_config.isaaclab.python_executable),
+                conda_path: db_config
+                    .remove("isaaclab_conda_path")
+                    .map(PathBuf::from)
+                    .unwrap_or(default_config.isaaclab.conda_path),
+                default_conda_env: db_config
+                    .remove("isaaclab_default_conda_env")
+                    .unwrap_or(default_config.isaaclab.default_conda_env),
+            },
+            storage: StorageConfig {
+                output_path: db_config
+                    .remove("storage_output_path")
+                    .map(PathBuf::from)
+                    .unwrap_or(default_config.storage.output_path),
+                log_path: db_config
+                    .remove("storage_log_path")
+                    .map(PathBuf::from)
+                    .unwrap_or(default_config.storage.log_path),
+                database_url: default_config.storage.database_url,
+            },
+            tensorboard: TensorBoardConfig {
+                base_port: db_config
+                    .remove("tensorboard_base_port")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.tensorboard.base_port),
+                max_instances: db_config
+                    .remove("tensorboard_max_instances")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.tensorboard.max_instances),
+            },
+            sync: SyncConfig {
+                target_path: db_config
+                    .remove("sync_target_path")
+                    .map(PathBuf::from)
+                    .unwrap_or(default_config.sync.target_path),
+                default_excludes: db_config
+                    .remove("sync_default_excludes")
+                    .and_then(|v| serde_json::from_str(&v).ok())
+                    .unwrap_or(default_config.sync.default_excludes),
+            },
+            tasks: TaskConfig {
+                max_concurrent: db_config
+                    .remove("tasks_max_concurrent")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.tasks.max_concurrent),
+                default_headless: db_config
+                    .remove("tasks_default_headless")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.tasks.default_headless),
+                timeout_seconds: db_config
+                    .remove("tasks_timeout_seconds")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.tasks.timeout_seconds),
+                working_directory: db_config
+                    .remove("tasks_working_directory")
+                    .map(PathBuf::from)
+                    .unwrap_or(default_config.tasks.working_directory),
+            },
+        };
         
-        if let Ok(host) = std::env::var("SERVER_HOST") {
-            config.server.host = host;
-        }
-        
-        if let Ok(port) = std::env::var("SERVER_PORT") {
-            if let Ok(port) = port.parse() {
-                config.server.port = port;
-            }
-        }
-        
-        if let Ok(isaaclab_path) = std::env::var("ISAACLAB_PATH") {
-            config.isaaclab.path = PathBuf::from(isaaclab_path);
-        }
-        
-        if let Ok(conda_path) = std::env::var("CONDA_PATH") {
-            config.isaaclab.conda_path = PathBuf::from(conda_path);
-        }
-        
-        if let Ok(conda_env) = std::env::var("CONDA_ENV") {
-            config.isaaclab.default_conda_env = conda_env;
-        }
-        
-        if let Ok(database_url) = std::env::var("DATABASE_URL") {
-            config.storage.database_url = database_url;
+        if !db_config.is_empty() {
+            tracing::warn!("Unused configuration keys found in database: {:?}", db_config.keys());
         }
 
         Ok(config)
     }
 
-    pub fn save(&self) -> Result<()> {
-        std::fs::create_dir_all("config")?;
-        let toml_str = toml::to_string_pretty(self)?;
-        std::fs::write("config/app.toml", toml_str)?;
+    pub async fn save_to_db(&self, db: &SqlitePool) -> Result<()> {
+        let mut tx = db.begin().await?;
+
+        let query_str = "INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at";
+
+        sqlx::query(query_str).bind("server_host").bind(&self.server.host).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("server_port").bind(self.server.port.to_string()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("isaaclab_path").bind(self.isaaclab.path.to_string_lossy()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("isaaclab_python_executable").bind(&self.isaaclab.python_executable).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("isaaclab_conda_path").bind(self.isaaclab.conda_path.to_string_lossy()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("isaaclab_default_conda_env").bind(&self.isaaclab.default_conda_env).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("storage_output_path").bind(self.storage.output_path.to_string_lossy()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("storage_log_path").bind(self.storage.log_path.to_string_lossy()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("tensorboard_base_port").bind(self.tensorboard.base_port.to_string()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("tensorboard_max_instances").bind(self.tensorboard.max_instances.to_string()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("sync_target_path").bind(self.sync.target_path.to_string_lossy()).execute(&mut *tx).await?;
+        let excludes_json = serde_json::to_string(&self.sync.default_excludes)?;
+        sqlx::query(query_str).bind("sync_default_excludes").bind(&excludes_json).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("tasks_max_concurrent").bind(self.tasks.max_concurrent.to_string()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("tasks_default_headless").bind(self.tasks.default_headless.to_string()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("tasks_timeout_seconds").bind(self.tasks.timeout_seconds.to_string()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("tasks_working_directory").bind(self.tasks.working_directory.to_string_lossy()).execute(&mut *tx).await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
-        // 验证IsaacLab路径
         if !self.isaaclab.path.exists() {
             anyhow::bail!("IsaacLab path does not exist: {:?}", self.isaaclab.path);
         }
-
-        // 验证Conda路径
         if !self.isaaclab.conda_path.exists() {
             anyhow::bail!("Conda path does not exist: {:?}", self.isaaclab.conda_path);
         }
-
-        // 验证conda.sh文件存在
         let conda_script = self.isaaclab.conda_path.join("etc/profile.d/conda.sh");
         if !conda_script.exists() {
             anyhow::bail!("Conda script not found: {:?}", conda_script);
         }
-
-        // 创建必要的目录
         std::fs::create_dir_all(&self.storage.output_path)?;
         std::fs::create_dir_all(&self.storage.log_path)?;
-        std::fs::create_dir_all("data")?;
 
+        let db_path_str = self.storage.database_url.strip_prefix("sqlite:").unwrap_or(&self.storage.database_url);
+        if let Some(parent) = PathBuf::from(db_path_str).parent() {
+            if !parent.as_os_str().is_empty() {
+                 std::fs::create_dir_all(parent)?;
+            }
+        }
         Ok(())
     }
 }

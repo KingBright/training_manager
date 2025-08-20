@@ -47,6 +47,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 thiserror = "2.0"
 
+# 异步处理
+futures = "0.3"
+
 # UUID生成
 uuid = { version = "1.0", features = ["v4", "serde"] }
 

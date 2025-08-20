@@ -84,7 +84,7 @@ pub struct AppState {
     pub tasks: Arc<RwLock<HashMap<String, TaskInfo>>>,
     pub queue: Arc<Mutex<Vec<String>>>,
     pub current_task: Arc<Mutex<Option<String>>>,
-    pub config: config::Config,
+    pub config: Arc<RwLock<config::Config>>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +105,8 @@ pub enum AppError {
     TaskAlreadyRunning,
     #[error("Multipart error: {0}")]
     Multipart(#[from] MultipartError),
+    #[error("Config error: {0}")]
+    Config(#[from] anyhow::Error),
 }
 
 impl axum::response::IntoResponse for AppError {
@@ -123,6 +125,10 @@ impl axum::response::IntoResponse for AppError {
             AppError::Multipart(err) => {
                 error!("Multipart error: {}", err);
                 (StatusCode::BAD_REQUEST, format!("Multipart form error: {}", err))
+            }
+            AppError::Config(err) => {
+                error!("Configuration error: {}", err);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Configuration error".to_string())
             }
         };
         (status, Json(serde_json::json!({ "error": error_message }))).into_response()
@@ -143,13 +149,13 @@ async fn main() -> Result<()> {
     let db = SqlitePool::connect(database_url).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
     
-    let config = config::Config::load()?;
+    let config = config::Config::load(&db).await?;
     let state = AppState {
         db: db.clone(),
         tasks: Arc::new(RwLock::new(HashMap::new())),
         queue: Arc::new(Mutex::new(Vec::new())),
         current_task: Arc::new(Mutex::new(None)),
-        config,
+        config: Arc::new(RwLock::new(config)),
     };
     
     let task_manager = TaskManager::new(state.clone());
@@ -164,6 +170,7 @@ async fn main() -> Result<()> {
         .route("/api/tasks/{id}/metrics", get(get_task_metrics_handler))
         .route("/api/conda/envs", get(get_conda_envs_handler))
         .route("/api/queue", get(get_queue_handler))
+        .route("/api/config", get(get_config_handler).post(update_config_handler))
         .route("/api/sync", post(sync_code_handler))
         .route("/api/sync/config", get(get_sync_config_handler))
         .route("/api/sync/manifest", get(get_sync_manifest_handler))
@@ -173,7 +180,10 @@ async fn main() -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
     
-    let addr = format!("{}:{}", state.config.server.host, state.config.server.port);
+    let addr = {
+        let config_guard = state.config.read().await;
+        format!("{}:{}", config_guard.server.host, config_guard.server.port)
+    };
     info!("Starting IsaacLab Manager on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
@@ -187,6 +197,23 @@ async fn index_handler() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
+async fn get_config_handler(State(state): State<AppState>) -> Json<config::Config> {
+    let config = state.config.read().await;
+    Json(config.clone())
+}
+
+async fn update_config_handler(
+    State(state): State<AppState>,
+    Json(new_config): Json<config::Config>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    new_config.validate()?;
+    let mut config_guard = state.config.write().await;
+    *config_guard = new_config;
+    config_guard.save_to_db(&state.db).await?;
+    Ok(Json(serde_json::json!({ "message": "Configuration updated successfully" })))
+}
+
+
 async fn list_tasks_handler(State(state): State<AppState>) -> Result<Json<Vec<Task>>, AppError> {
     let tasks = sqlx::query_as::<_, Task>("SELECT * FROM tasks ORDER BY created_at DESC")
         .fetch_all(&state.db)
@@ -199,7 +226,8 @@ async fn create_task_handler(
     Json(request): Json<CreateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
     let id = Uuid::new_v4().to_string();
-    let conda_env = request.conda_env.unwrap_or_else(|| state.config.isaaclab.default_conda_env.clone());
+    let config = state.config.read().await;
+    let conda_env = request.conda_env.unwrap_or_else(|| config.isaaclab.default_conda_env.clone());
     let task_name = extract_task_name(&request.command);
     
     let task = Task {
@@ -299,7 +327,8 @@ async fn get_queue_handler(State(state): State<AppState>) -> Json<Vec<String>> {
 }
 
 async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Vec<String>>, AppError> {
-    let conda_path = state.config.isaaclab.conda_path.to_string_lossy().to_string();
+    let config = state.config.read().await;
+    let conda_path = config.isaaclab.conda_path.to_string_lossy().to_string();
     Ok(Json(get_conda_environments(&conda_path).await?))
 }
 
@@ -307,7 +336,7 @@ async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Ve
 
 /// Resolves and validates a user-provided path against a base directory.
 /// Ensures the final path is a descendant of the base path and exists.
-fn resolve_safe_sync_path(base_path: &std::path::Path, remote_path_opt: Option<&String>) -> Result<PathBuf, AppError> {
+async fn resolve_safe_sync_path(base_path: &std::path::Path, remote_path_opt: Option<&String>) -> Result<PathBuf, AppError> {
     let mut target_path = base_path.to_path_buf();
 
     if let Some(remote_path_str) = remote_path_opt {
@@ -344,8 +373,9 @@ fn sanitize_path(path_str: &str) -> PathBuf {
 }
 
 async fn get_sync_config_handler(State(state): State<AppState>) -> Json<SyncConfigResponse> {
+    let config = state.config.read().await;
     Json(SyncConfigResponse {
-        default_excludes: state.config.sync.default_excludes.clone(),
+        default_excludes: config.sync.default_excludes.clone(),
     })
 }
 
@@ -353,10 +383,11 @@ async fn get_sync_manifest_handler(
     State(state): State<AppState>,
     Query(params): Query<SyncRequest>,
 ) -> Result<Json<HashMap<String, String>>, AppError> {
-    let base_path = PathBuf::from(&state.config.sync.target_path);
-    let target_path = resolve_safe_sync_path(&base_path, params.remote_path.as_ref())?;
+    let config = state.config.read().await;
+    let base_path = PathBuf::from(&config.sync.target_path);
+    let target_path = resolve_safe_sync_path(&base_path, params.remote_path.as_ref()).await?;
 
-    let excludes = state.config.sync.default_excludes.clone();
+    let excludes = config.sync.default_excludes.clone();
     let manifest = tokio::task::spawn_blocking(move || {
         let exclude_patterns: Vec<glob::Pattern> = excludes
             .iter()
@@ -406,6 +437,7 @@ async fn download_file_handler(
     Path(path): Path<String>,
     Query(params): Query<SyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let config = state.config.read().await;
     let remote_dir_str = params.remote_path.as_deref().unwrap_or(".");
     let remote_dir_path = std::path::Path::new(remote_dir_str);
 
@@ -416,8 +448,7 @@ async fn download_file_handler(
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
             .collect::<PathBuf>();
-        state
-            .config
+        config
             .tasks
             .working_directory
             .join(sanitized_relative)
@@ -434,7 +465,7 @@ async fn download_file_handler(
 
     if !remote_dir_path.is_absolute() {
         let canonical_base =
-            state.config.tasks.working_directory.canonicalize().map_err(AppError::Io)?;
+            config.tasks.working_directory.canonicalize().map_err(AppError::Io)?;
         if !canonical_path.starts_with(&canonical_base) {
             error!(
                 "Potential directory traversal attempt blocked: {:?}",
@@ -472,6 +503,7 @@ async fn download_zip_handler(
     State(state): State<AppState>,
     Query(params): Query<SyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let config = state.config.read().await;
     let remote_path_str = params.remote_path.as_deref().unwrap_or(".");
     let remote_path = std::path::Path::new(remote_path_str);
 
@@ -482,8 +514,7 @@ async fn download_zip_handler(
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
             .collect::<PathBuf>();
-        state
-            .config
+        config
             .tasks
             .working_directory
             .join(sanitized_relative)
@@ -503,10 +534,10 @@ async fn download_zip_handler(
 
     if !remote_path.is_absolute() {
         let canonical_base =
-            state.config.tasks.working_directory.canonicalize().map_err(|e| {
+            config.tasks.working_directory.canonicalize().map_err(|e| {
                 error!(
                     "Working directory '{}' not found or invalid: {}",
-                    state.config.tasks.working_directory.display(),
+                    config.tasks.working_directory.display(),
                     e
                 );
                 AppError::Io(e)
@@ -611,7 +642,8 @@ async fn sync_code_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let target_path = PathBuf::from(state.config.sync.target_path.to_string_lossy().to_string());
+    let config = state.config.read().await;
+    let target_path = PathBuf::from(config.sync.target_path.to_string_lossy().to_string());
     if target_path.to_string_lossy().is_empty() {
         return Ok(Json(serde_json::json!({"error": "Sync target path not configured"})));
     }
@@ -688,7 +720,8 @@ impl TaskManager {
     }
 
     async fn execute_task(state: AppState, task_id: &str) -> Result<()> {
-        let log_dir = std::path::Path::new(&state.config.storage.output_path).join(task_id);
+        let config = state.config.read().await;
+        let log_dir = std::path::Path::new(&config.storage.output_path).join(task_id);
         tokio_fs::create_dir_all(&log_dir).await?;
         let log_path = log_dir.join("task.log");
         let log_file = std::fs::File::create(&log_path)?;
@@ -704,7 +737,7 @@ impl TaskManager {
         let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
             .bind(task_id).fetch_one(&state.db).await?;
 
-        let working_dir = task.working_dir.unwrap_or_else(|| state.config.tasks.working_directory.to_string_lossy().to_string());
+        let working_dir = task.working_dir.unwrap_or_else(|| config.tasks.working_directory.to_string_lossy().to_string());
 
         let mut cmd = Command::new("bash");
         cmd.current_dir(working_dir)
