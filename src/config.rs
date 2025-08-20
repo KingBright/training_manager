@@ -67,7 +67,7 @@ impl Default for Config {
                 path: PathBuf::from("/home/ecs-user"),
                 python_executable: "python".to_string(),
                 conda_path: PathBuf::from("/home/ecs-user/anaconda3"),
-                default_conda_env: "env_isaaclab".to_string(),
+                default_conda_env: "isaaclab".to_string(),
             },
             storage: StorageConfig {
                 output_path: PathBuf::from("/home/ecs-user/outputs"),
@@ -89,6 +89,7 @@ impl Default for Config {
                     ".vscode/".to_string(),
                     "*.tmp".to_string(),
                     ".DS_Store".to_string(),
+                    "target".to_string(),
                 ],
             },
             tasks: TaskConfig {
