@@ -6,12 +6,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    pub auto_refresh_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub isaaclab: IsaacLabConfig,
     pub storage: StorageConfig,
     pub sync: SyncConfig,
     pub tasks: TaskConfig,
+    pub metrics: MetricsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +79,9 @@ impl Default for Config {
             },
             tasks: TaskConfig {
                 working_directory: PathBuf::from("/home/ecs-user"),
+            },
+            metrics: MetricsConfig {
+                auto_refresh_interval_secs: 30,
             },
         }
     }
@@ -139,6 +148,12 @@ impl Config {
                     .map(PathBuf::from)
                     .unwrap_or(default_config.tasks.working_directory),
             },
+            metrics: MetricsConfig {
+                auto_refresh_interval_secs: db_config
+                    .remove("metrics_auto_refresh_interval_secs")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default_config.metrics.auto_refresh_interval_secs),
+            },
         };
         
         if !db_config.is_empty() {
@@ -162,6 +177,7 @@ impl Config {
         let excludes_json = serde_json::to_string(&self.sync.default_excludes)?;
         sqlx::query(query_str).bind("sync_default_excludes").bind(&excludes_json).execute(&mut *tx).await?;
         sqlx::query(query_str).bind("tasks_working_directory").bind(self.tasks.working_directory.to_string_lossy()).execute(&mut *tx).await?;
+        sqlx::query(query_str).bind("metrics_auto_refresh_interval_secs").bind(self.metrics.auto_refresh_interval_secs.to_string()).execute(&mut *tx).await?;
 
         tx.commit().await?;
         Ok(())
