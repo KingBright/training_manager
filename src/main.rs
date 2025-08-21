@@ -8,6 +8,7 @@ use axum::{
     Router,
 };
 use axum::extract::{multipart::MultipartError, Multipart};
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{migrate::MigrateDatabase, Sqlite, SqlitePool};
