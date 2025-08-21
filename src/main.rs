@@ -603,6 +603,11 @@ async fn download_zip_handler(
             let walker = WalkDir::new(&target_path).into_iter();
             for entry in walker.filter_map(|e| e.ok()) {
                 let path = entry.path();
+                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    if file_name.starts_with("events.out") {
+                        continue;
+                    }
+                }
 
                 // If it's a .pt file, only include the newest one
                 if path.extension().map_or(false, |ext| ext == "pt") {
