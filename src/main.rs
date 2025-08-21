@@ -669,11 +669,15 @@ async fn sync_code_handler(
     
     let mut files_written = 0;
     while let Some(field) = multipart.next_field().await? {
-        if let Some(relative_path_str) = field.name() {
+        if let Some(relative_path_str) = field.file_name() {
             let relative_path = PathBuf::from(relative_path_str)
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))
                 .collect::<PathBuf>();
+
+            if relative_path.as_os_str().is_empty() {
+                continue;
+            }
 
             let data = field.bytes().await?;
             let dest_path = target_path.join(&relative_path);

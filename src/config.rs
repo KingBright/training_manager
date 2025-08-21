@@ -166,18 +166,27 @@ impl Config {
     pub async fn save_to_db(&self, db: &SqlitePool) -> Result<()> {
         let mut tx = db.begin().await?;
 
+        let mut kvs: Vec<(&str, String)> = Vec::new();
+        kvs.push(("server_host", self.server.host.clone()));
+        kvs.push(("server_port", self.server.port.to_string()));
+        kvs.push(("isaaclab_conda_path", self.isaaclab.conda_path.to_string_lossy().into_owned()));
+        kvs.push(("isaaclab_default_conda_env", self.isaaclab.default_conda_env.clone()));
+        kvs.push(("storage_output_path", self.storage.output_path.to_string_lossy().into_owned()));
+        kvs.push(("sync_target_path", self.sync.target_path.to_string_lossy().into_owned()));
+        let excludes_json = serde_json::to_string(&self.sync.default_excludes)?;
+        kvs.push(("sync_default_excludes", excludes_json));
+        kvs.push(("tasks_working_directory", self.tasks.working_directory.to_string_lossy().into_owned()));
+        kvs.push(("metrics_auto_refresh_interval_secs", self.metrics.auto_refresh_interval_secs.to_string()));
+
         let query_str = "INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at";
 
-        sqlx::query(query_str).bind("server_host").bind(&self.server.host).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("server_port").bind(self.server.port.to_string()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("isaaclab_conda_path").bind(self.isaaclab.conda_path.to_string_lossy()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("isaaclab_default_conda_env").bind(&self.isaaclab.default_conda_env).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("storage_output_path").bind(self.storage.output_path.to_string_lossy()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("sync_target_path").bind(self.sync.target_path.to_string_lossy()).execute(&mut *tx).await?;
-        let excludes_json = serde_json::to_string(&self.sync.default_excludes)?;
-        sqlx::query(query_str).bind("sync_default_excludes").bind(&excludes_json).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("tasks_working_directory").bind(self.tasks.working_directory.to_string_lossy()).execute(&mut *tx).await?;
-        sqlx::query(query_str).bind("metrics_auto_refresh_interval_secs").bind(self.metrics.auto_refresh_interval_secs.to_string()).execute(&mut *tx).await?;
+        for (key, value) in kvs {
+            sqlx::query(query_str)
+                .bind(key)
+                .bind(value)
+                .execute(&mut *tx)
+                .await?;
+        }
 
         tx.commit().await?;
         Ok(())
