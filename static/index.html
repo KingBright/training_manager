@@ -656,6 +656,15 @@
                             <input type="text" v-model="configData.tasks.working_directory" required>
                         </div>
 
+                        <h3 style="margin-top: 30px; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px;">指标配置</h3>
+                        <div class="form-group" v-if="configData.metrics">
+                            <label>图表自动刷新间隔 (秒)</label>
+                            <input type="number" v-model.number="configData.metrics.auto_refresh_interval_secs" required min="5">
+                             <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                                <i class="fas fa-info-circle"></i> 设置指标页面图表自动刷新的频率，单位为秒。建议值不小于5。
+                            </small>
+                        </div>
+
                         <button type="submit" class="btn" :disabled="isSavingConfig">
                             <i class="fas fa-save" v-if="!isSavingConfig"></i>
                             <div class="loading" v-if="isSavingConfig"></div>
@@ -702,6 +711,12 @@
                     syncResult: '',
                     isDownloading: false,
                     downloadStatus: '',
+                    metricsAutoRefreshIntervalId: null,
+                    chartColorPalette: [
+                        '#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6',
+                        '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9A6324', '#fffac8', '#800000', '#aaffc3',
+                        '#808000', '#ffd8b1', '#000075', '#a9a9a9'
+                    ],
                 }
             },
             computed: {
@@ -715,6 +730,29 @@
                     return this.syncConfig.files.filter(file =>
                         !this.isExcluded(file.webkitRelativePath, this.syncConfig.defaultExcludes)
                     );
+                }
+            },
+            watch: {
+                activeMetricTask(newTaskId, oldTaskId) {
+                    // When the selected task changes, we need to manage the timer.
+                    if (this.metricsAutoRefreshIntervalId) {
+                        this.stopMetricsAutoRefresh();
+                    }
+                    if (newTaskId && this.activeTab === 'metrics') {
+                        // We need to fetch immediately, then start the timer.
+                        this.refreshMetrics(newTaskId).then(() => {
+                           this.startMetricsAutoRefresh(newTaskId);
+                        });
+                    }
+                },
+                activeTab(newTab, oldTab) {
+                    // When the tab changes, manage the timer.
+                    if (oldTab === 'metrics' && this.metricsAutoRefreshIntervalId) {
+                        this.stopMetricsAutoRefresh();
+                    }
+                    if (newTab === 'metrics' && this.activeMetricTask) {
+                        this.startMetricsAutoRefresh(this.activeMetricTask);
+                    }
                 }
             },
             async mounted() {
@@ -731,7 +769,23 @@
             methods: {
                 setActiveMetricTask(taskId) {
                     this.activeMetricTask = taskId;
-                    this.refreshMetrics(taskId);
+                    // The watcher for activeMetricTask will now handle calling refreshMetrics and starting the timer.
+                },
+                 startMetricsAutoRefresh(taskId) {
+                    this.stopMetricsAutoRefresh(); // Prevent multiple timers
+                    const intervalSeconds = this.configData?.metrics?.auto_refresh_interval_secs;
+                    if (intervalSeconds && intervalSeconds > 0) {
+                        const intervalMs = intervalSeconds * 1000;
+                        this.metricsAutoRefreshIntervalId = setInterval(() => {
+                            this.refreshMetrics(taskId);
+                        }, intervalMs);
+                    }
+                },
+                stopMetricsAutoRefresh() {
+                    if (this.metricsAutoRefreshIntervalId) {
+                        clearInterval(this.metricsAutoRefreshIntervalId);
+                        this.metricsAutoRefreshIntervalId = null;
+                    }
                 },
                 async loadConfig() {
                     try {
@@ -881,81 +935,101 @@
                         const rawMetrics = response.data;
                         this.metrics[taskId] = rawMetrics;
 
-                        // Sort and store latest metrics
                         const sortedLatest = Object.keys(rawMetrics.latest_fixed_metrics)
                             .sort()
                             .map(key => ({ key, value: rawMetrics.latest_fixed_metrics[key] }));
 
-                        // Sort and store historical metric keys
-                        const sortedHistoricalKeys = Object.keys(rawMetrics.historical_metrics).sort();
+                        const newHistoricalKeys = new Set(Object.keys(rawMetrics.historical_metrics).sort());
 
                         this.sortedMetrics[taskId] = {
                             latest: sortedLatest,
-                            historicalKeys: sortedHistoricalKeys
+                            historicalKeys: Array.from(newHistoricalKeys)
                         };
 
-                        // Wait for the DOM to update
                         await this.$nextTick();
 
-                        // --- Chart Rendering ---
-                        if (this.charts[taskId] && Array.isArray(this.charts[taskId])) {
-                            this.charts[taskId].forEach(chart => {
-                                if (chart && typeof chart.destroy === 'function') {
-                                    chart.destroy();
-                                }
-                            });
+                        if (!this.charts[taskId]) {
+                            this.charts[taskId] = {};
                         }
-                        this.charts[taskId] = [];
 
-                        const containerId = this.activeTab === 'metrics' ? 'charts-container-metrics-tab' : `charts-container-${taskId}`;
+                        const containerId = 'charts-container-metrics-tab';
                         const container = document.getElementById(containerId);
+                        if (!container) return;
 
-                        if (!container) {
-                            console.warn(`Chart container #${containerId} not found, aborting render.`);
-                            return;
+                        const existingChartKeys = new Set(Object.keys(this.charts[taskId]));
+
+                        // 1. Remove old charts
+                        for (const key of existingChartKeys) {
+                            if (!newHistoricalKeys.has(key)) {
+                                this.charts[taskId][key].destroy();
+                                const canvasToRemove = document.getElementById(`chart-canvas-${taskId}-${key}`);
+                                if(canvasToRemove) canvasToRemove.remove();
+                                delete this.charts[taskId][key];
+                            }
                         }
 
-                        container.innerHTML = '';
-
-                        if (sortedHistoricalKeys.length === 0) {
+                        if (newHistoricalKeys.size === 0 && existingChartKeys.size === 0) {
                             container.innerHTML = '<p style="color: #666;">没有可用的历史指标。</p>';
                             return;
+                        } else if (newHistoricalKeys.size > 0 && container.querySelector('p')) {
+                            container.innerHTML = ''; // Clear the "no metrics" message
                         }
 
-                        for (const key of sortedHistoricalKeys) {
-                            const canvas = document.createElement('canvas');
-                            canvas.style.marginTop = '20px';
-                            container.appendChild(canvas);
-
-                            const ctx = canvas.getContext('2d');
+                        // 2. Update existing and add new charts
+                        let colorIndex = 0;
+                        for (const key of Array.from(newHistoricalKeys)) {
                             const chartData = rawMetrics.historical_metrics[key];
+                            const labels = chartData.map(d => d[0]);
+                            const data = chartData.map(d => d[1]);
 
-                            const chart = new Chart(ctx, {
-                                type: 'line',
-                                data: {
-                                    labels: chartData.map(d => d[0]),
-                                    datasets: [{
-                                        label: key,
-                                        data: chartData.map(d => d[1]),
-                                        borderColor: `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 1)`,
-                                        borderWidth: 1,
-                                        fill: false,
-                                        tension: 0.1,
-                                        pointRadius: 0,
-                                    }]
-                                },
-                                options: {
-                                    scales: {
-                                        x: { title: { display: true, text: 'Iteration' } },
-                                        y: { title: { display: true, text: 'Value' } }
+                            if (this.charts[taskId][key]) {
+                                // Update existing chart
+                                const chart = this.charts[taskId][key];
+                                chart.data.labels = labels;
+                                chart.data.datasets[0].data = data;
+                                chart.update('none'); // Use 'none' to prevent animation
+                            } else {
+                                // Add new chart
+                                const canvas = document.createElement('canvas');
+                                canvas.id = `chart-canvas-${taskId}-${key}`;
+                                canvas.style.marginTop = '20px';
+                                container.appendChild(canvas);
+
+                                const ctx = canvas.getContext('2d');
+                                const color = this.chartColorPalette[colorIndex % this.chartColorPalette.length];
+
+                                const chart = new Chart(ctx, {
+                                    type: 'line',
+                                    data: {
+                                        labels: labels,
+                                        datasets: [{
+                                            label: key,
+                                            data: data,
+                                            borderColor: color,
+                                            borderWidth: 1.5,
+                                            fill: false,
+                                            tension: 0.2,
+                                            pointRadius: 0,
+                                        }]
+                                    },
+                                    options: {
+                                        animation: {
+                                            duration: 400 // A bit of animation on creation
+                                        },
+                                        scales: {
+                                            x: { title: { display: true, text: 'Iteration' } },
+                                            y: { title: { display: true, text: 'Value' } }
+                                        }
                                     }
-                                }
-                            });
-                            this.charts[taskId].push(chart);
+                                });
+                                this.charts[taskId][key] = chart;
+                            }
+                            colorIndex++;
                         }
-
                     } catch (error) {
-                        toastr.error('获取指标失败: ' + error.message);
+                        if (error.response?.status !== 404) { // Don't show error for tasks that are stopping
+                           toastr.error('获取指标失败: ' + error.message);
+                        }
                     }
                 },
                 async downloadTaskOutput(task) {
