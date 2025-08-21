@@ -33,6 +33,15 @@ use zip::write::{FileOptions, ZipWriter};
 mod config;
 mod metrics_parser;
 
+/// IsaacLab Manager Server
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Port to run the server on
+    #[arg(short, long)]
+    port: Option<u16>,
+}
+
 // --- Data Structures ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -139,6 +148,7 @@ impl axum::response::IntoResponse for AppError {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
     tracing_subscriber::fmt::init();
     
     let database_url = "sqlite:./isaaclab_manager.db";
@@ -149,7 +159,10 @@ async fn main() -> Result<()> {
     let db = SqlitePool::connect(database_url).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
     
-    let config = config::Config::load(&db).await?;
+    let mut config = config::Config::load(&db).await?;
+    if let Some(port) = args.port {
+        config.server.port = port;
+    }
     let state = AppState {
         db: db.clone(),
         tasks: Arc::new(RwLock::new(HashMap::new())),
