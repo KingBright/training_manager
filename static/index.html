@@ -692,7 +692,7 @@
                     logs: {},
                     metrics: {},
                     sortedMetrics: {},
-                    charts: {},
+                    isRefreshingMetrics: {},
                     newTask: {
                         command: '',
                         condaEnv: '',
@@ -756,6 +756,7 @@
                 }
             },
             async mounted() {
+                this.charts = {};
                 await this.loadConfig();
                 this.loadTasks();
                 this.loadQueue();
@@ -930,6 +931,10 @@
                     this.setActiveMetricTask(taskId);
                 },
                 async refreshMetrics(taskId) {
+                    if (this.isRefreshingMetrics[taskId]) {
+                        return;
+                    }
+                    this.isRefreshingMetrics[taskId] = true;
                     try {
                         const response = await axios.get(`/api/tasks/${taskId}/metrics`);
                         const rawMetrics = response.data;
@@ -1027,9 +1032,12 @@
                             colorIndex++;
                         }
                     } catch (error) {
+                        console.error('获取指标失败:', error);
                         if (error.response?.status !== 404) { // Don't show error for tasks that are stopping
-                           toastr.error('获取指标失败: ' + error.message);
+                           toastr.error('获取指标失败: ' + (error.message || '请查看控制台获取更多信息'));
                         }
+                    } finally {
+                        this.isRefreshingMetrics[taskId] = false;
                     }
                 },
                 async downloadTaskOutput(task) {
