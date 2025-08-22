@@ -662,28 +662,45 @@ async fn sync_code_handler(
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let config = state.config.read().await;
-    let target_path = PathBuf::from(config.sync.target_path.to_string_lossy().to_string());
-    if target_path.to_string_lossy().is_empty() {
+    let target_path_str = config.sync.target_path.to_string_lossy();
+
+    if target_path_str.is_empty() {
         return Ok(Json(serde_json::json!({"error": "Sync target path not configured"})));
     }
+
+    let target_path = PathBuf::from(target_path_str.to_string());
+
+    // Ensure the base directory exists
+    tokio_fs::create_dir_all(&target_path).await?;
     
+    // Canonicalize the path to resolve any relative parts and get a stable, absolute path.
+    // This is the core of the fix.
+    let canonical_target = target_path.canonicalize().map_err(|e| {
+        error!("Sync target path '{}' not found or invalid: {}", target_path.display(), e);
+        AppError::Io(e)
+    })?;
+
     let mut files_written = 0;
     while let Some(field) = multipart.next_field().await? {
         if let Some(relative_path_str) = field.file_name() {
-            let relative_path = PathBuf::from(relative_path_str)
-                .components()
-                .filter(|c| matches!(c, std::path::Component::Normal(_)))
-                .collect::<PathBuf>();
+            let relative_path = sanitize_path(relative_path_str);
 
             if relative_path.as_os_str().is_empty() {
                 continue;
             }
 
-            let data = field.bytes().await?;
-            let dest_path = target_path.join(&relative_path);
+            let dest_path = canonical_target.join(&relative_path);
+
+            // Security check to ensure the final path is within the canonical target directory.
+            if !dest_path.starts_with(&canonical_target) {
+                error!("Security violation: file path '{}' escaped target directory '{}'", dest_path.display(), canonical_target.display());
+                continue;
+            }
+
             if let Some(parent) = dest_path.parent() {
                 tokio_fs::create_dir_all(parent).await?;
             }
+            let data = field.bytes().await?;
             tokio_fs::write(&dest_path, &data).await?;
             files_written += 1;
         }
