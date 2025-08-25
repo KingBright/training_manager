@@ -59,7 +59,7 @@ pub struct Task {
     pub log_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "task_status", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
