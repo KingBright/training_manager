@@ -61,6 +61,7 @@ pub struct Task {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "task_status", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
     Queued,
     Running,
@@ -760,6 +761,23 @@ impl TaskManager {
     }
 
     async fn execute_task(state: AppState, task_id: &str) -> Result<()> {
+        let task = match sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+            .bind(task_id)
+            .fetch_one(&state.db)
+            .await
+        {
+            Ok(task) => task,
+            Err(e) => {
+                error!("Could not fetch task {} from DB while trying to execute: {}", task_id, e);
+                return Ok(()); // Stop execution if task is not found
+            }
+        };
+
+        if task.status != TaskStatus::Queued {
+            info!("Task {} has status {:?}, skipping execution.", task_id, task.status);
+            return Ok(());
+        }
+
         let config = state.config.read().await;
         let log_dir = std::path::Path::new(&config.storage.output_path).join(task_id);
         tokio_fs::create_dir_all(&log_dir).await?;
@@ -773,9 +791,6 @@ impl TaskManager {
             TaskStatus::Running, now, log_path_str, task_id
         )
         .execute(&state.db).await?;
-
-        let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
-            .bind(task_id).fetch_one(&state.db).await?;
 
         let working_dir = task.working_dir.unwrap_or_else(|| config.tasks.working_directory.to_string_lossy().to_string());
 
