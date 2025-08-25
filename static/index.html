@@ -510,7 +510,7 @@
                                     <button @click="copyCommand(task.command)" class="btn btn-secondary">
                                         <i class="fas fa-copy"></i> 复制命令
                                     </button>
-                                    <button v-if="task.status === 'running'" @click="stopTask(task.id)" class="btn btn-danger">
+                                    <button v-if="task.status === 'running' || task.status === 'queued'" @click="stopTask(task.id)" class="btn btn-danger">
                                         <i class="fas fa-stop"></i> 停止
                                     </button>
                                     <button @click="deleteTask(task.id)" class="btn btn-danger">
