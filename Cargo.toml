@@ -60,7 +60,7 @@ chrono = { version = "0.4", features = ["serde"] }
 notify = "8.2"
 
 # HTTP客户端
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 
 # 模板引擎
 askama = "0.14"
