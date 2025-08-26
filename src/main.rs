@@ -280,9 +280,15 @@ async fn get_task_handler(State(state): State<AppState>, Path(id): Path<String>)
 }
 
 async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
-    if let Some(task_info) = state.tasks.read().await.get(&id) {
+    // Remove the task from the live tasks map first.
+    // If it's not there, it might have already finished.
+    if let Some(task_info) = state.tasks.write().await.remove(&id) {
         if let Some(process) = &task_info.process {
-            process.lock().await.kill().await?;
+            // Attempt to kill the process.
+            if let Err(e) = process.lock().await.kill().await {
+                error!("Failed to kill process for task {}: {}", id, e);
+                // Even if killing fails, we proceed to mark the task as stopped.
+            }
         }
     }
 
@@ -290,13 +296,17 @@ async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>
     sqlx::query!("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?", TaskStatus::Stopped, now, id)
         .execute(&state.db)
         .await?;
+
+    info!("Task {} marked as stopped.", id);
     Ok(Json(serde_json::json!({"message": "Task stopped"})))
 }
 
+
 async fn delete_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
-    // First, ensure the task is stopped and TensorBoard is killed
+    // First, ensure the task is stopped.
     let _ = stop_task_handler(State(state.clone()), Path(id.clone())).await;
 
+    // Then, delete the record from the database.
     sqlx::query!("DELETE FROM tasks WHERE id = ?", id)
         .execute(&state.db)
         .await?;
@@ -761,15 +771,15 @@ impl TaskManager {
     }
 
     async fn execute_task(state: AppState, task_id: &str) -> Result<()> {
-        let task = match sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        let mut task = match sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
             .bind(task_id)
             .fetch_one(&state.db)
             .await
         {
             Ok(task) => task,
             Err(e) => {
-                error!("Could not fetch task {} from DB while trying to execute: {}", task_id, e);
-                return Ok(()); // Stop execution if task is not found
+                error!("Could not fetch task {} from DB: {}", task_id, e);
+                return Ok(());
             }
         };
 
@@ -785,32 +795,67 @@ impl TaskManager {
         let log_file = std::fs::File::create(&log_path)?;
 
         let now = chrono::Utc::now();
-        let log_path_str = log_path.to_str();
+        let log_path_str = log_path.to_str().map(|s| s.to_string());
+
+        task.status = TaskStatus::Running;
+        task.started_at = Some(now);
+        task.log_path = log_path_str.clone();
+
         sqlx::query!(
             "UPDATE tasks SET status = ?, started_at = ?, log_path = ? WHERE id = ?",
-            TaskStatus::Running, now, log_path_str, task_id
+            task.status, task.started_at, task.log_path, task_id
         )
         .execute(&state.db).await?;
 
-        let working_dir = task.working_dir.unwrap_or_else(|| config.tasks.working_directory.to_string_lossy().to_string());
+        let working_dir = task.working_dir.clone().unwrap_or_else(|| config.tasks.working_directory.to_string_lossy().to_string());
 
         let mut cmd = Command::new("bash");
-        cmd.current_dir(working_dir)
+        cmd.current_dir(&working_dir)
             .arg("-c")
             .arg(&task.command)
             .stdout(log_file.try_clone()?)
             .stderr(log_file);
 
-        let mut child = cmd.spawn()?;
-        let status = child.wait().await?;
+        let child = cmd.spawn()?;
+        let child_arc = Arc::new(Mutex::new(child));
 
-        let final_status = if status.success() { TaskStatus::Completed } else { TaskStatus::Failed };
-        let finished_at = chrono::Utc::now();
-        sqlx::query!(
-            "UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?",
-            final_status, finished_at, task_id
-        )
-        .execute(&state.db).await?;
+        let task_info = TaskInfo {
+            task: task.clone(),
+            process: Some(child_arc.clone()),
+        };
+        state.tasks.write().await.insert(task_id.to_string(), task_info);
+
+        let wait_state = state.clone();
+        let wait_task_id = task_id.to_string();
+        tokio::spawn(async move {
+            let status = match child_arc.lock().await.wait().await {
+                Ok(status) => status,
+                Err(e) => {
+                    error!("Failed to wait for task {}: {}", wait_task_id, e);
+                    return;
+                }
+            };
+
+            // The task might have been stopped manually. If so, it will be removed from the map.
+            // If we can remove it, it means it finished naturally.
+            if let Some(_removed_task) = wait_state.tasks.write().await.remove(&wait_task_id) {
+                let final_status = if status.success() { TaskStatus::Completed } else { TaskStatus::Failed };
+                let finished_at = chrono::Utc::now();
+
+                if let Err(e) = sqlx::query!(
+                    "UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?",
+                    final_status, finished_at, wait_task_id
+                )
+                .execute(&wait_state.db).await {
+                    error!("Failed to update task {} status after completion: {}", wait_task_id, e);
+                }
+                info!("Task {} finished with status: {:?}", wait_task_id, final_status);
+            } else {
+                // If the task was not in the map, it means it was stopped via the API.
+                // The stop_task_handler is responsible for updating the DB in this case.
+                info!("Task {} was stopped manually, skipping final status update.", wait_task_id);
+            }
+        });
 
         Ok(())
     }
