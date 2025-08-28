@@ -1531,6 +1531,7 @@ dependencies = [
  "clap",
  "futures 0.3.31",
  "glob",
+ "home",
  "indicatif",
  "nix",
  "notify",

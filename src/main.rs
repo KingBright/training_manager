@@ -423,17 +423,22 @@ async fn resolve_sync_path(
         AppError::Io(e)
     })?;
 
-    // Security check: ensure the target path is within the application's root directory.
-    let app_root = std::env::current_dir()?.canonicalize()?;
-    if !canonical_target.starts_with(&app_root) {
-        error!(
-            "Security violation: Attempt to sync to a path outside of the application root. Target: {}, Root: {}",
-            canonical_target.display(),
-            app_root.display()
-        );
-        return Err(AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "Sync directory must be within the application root directory.",
+    // Security check: ensure the target path is within the user's home directory.
+    if let Some(home_dir) = home::home_dir() {
+        if !canonical_target.starts_with(&home_dir) {
+            error!(
+                "Security violation: Attempt to sync to a path outside of the user's home directory. Target: {}, Home: {}",
+                canonical_target.display(),
+                home_dir.display()
+            );
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Sync directory must be within the user's home directory.",
+            )));
+        }
+    } else {
+        return Err(AppError::Config(anyhow::anyhow!(
+            "Could not determine user's home directory."
         )));
     }
 
