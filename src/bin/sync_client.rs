@@ -170,12 +170,16 @@ async fn handle_upload(client: &Client, server: &str, dir: &Path, remote_dir: Op
         pb_upload.set_style(
             ProgressStyle::default_spinner()
                 .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{spinner:.blue} {msg}")?
+                .template("{spinner:.blue} {msg}")?,
         );
         pb_upload.set_message("Uploading files...");
 
-        let response = client
-            .post(&upload_url)
+        let mut request_builder = client.post(&upload_url);
+        if let Some(rd) = remote_dir {
+            request_builder = request_builder.query(&[("remote_path", rd)]);
+        }
+
+        let response = request_builder
             .multipart(form)
             .send()
             .await?
