@@ -56,6 +56,7 @@ pub struct Task {
     pub conda_env: Option<String>,
     pub working_dir: Option<String>,
     pub status: TaskStatus,
+    #[sqlx(default)]
     pub pid: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -163,7 +164,16 @@ async fn main() -> Result<()> {
     }
     
     let db = SqlitePool::connect(database_url).await?;
-    sqlx::migrate!("./migrations").run(&db).await?;
+    info!("Running database migrations...");
+    match sqlx::migrate!("./migrations").run(&db).await {
+        Ok(_) => info!("Database migrations completed successfully."),
+        Err(e) => {
+            error!("Database migration failed: {}", e);
+            // The application will continue, but may be in a degraded state
+            // if the schema is out of date. The #[sqlx(default)] attribute
+            // on new fields helps prevent crashes.
+        }
+    }
     
     let mut config = config::Config::load(&db).await?;
     if let Some(port) = args.port {
@@ -389,7 +399,7 @@ async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Ve
 
 /// Resolves the sync path based on configuration and an optional remote path from the client.
 /// If the remote path is provided, it must be absolute. Otherwise, the configured default is used.
-/// A security check ensures that the resolved path is within the user's home directory.
+/// A security check ensures that the resolved path is within the application's CWD.
 async fn resolve_sync_path(
     config_path: &std::path::Path,
     remote_path_opt: Option<&String>,
