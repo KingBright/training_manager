@@ -8,6 +8,15 @@ pub struct MetricsData {
     pub historical_metrics: HashMap<String, Vec<(i64, f64)>>,
 }
 
+impl MetricsData {
+    pub fn empty() -> Self {
+        Self {
+            latest_fixed_metrics: HashMap::new(),
+            historical_metrics: HashMap::new(),
+        }
+    }
+}
+
 // A list of metrics that should only show the latest value, not historical data.
 const FIXED_METRICS: &[&str] = &[
     "Computation",
