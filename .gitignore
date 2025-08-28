@@ -9,7 +9,6 @@ cargo.lock
 # Database
 *.db
 *.db-journal
-migrations/
 isaaclab_manager.db-journal
 isaaclab_manager.db-wal
 isaaclab_manager.db-shm
