@@ -397,30 +397,44 @@ async fn get_conda_envs_handler(State(state): State<AppState>) -> Result<Json<Ve
 
 // --- Sync Handlers ---
 
-/// Resolves and validates a user-provided path against a base directory.
-/// Ensures the final path is a descendant of the base path and exists.
-async fn resolve_safe_sync_path(base_path: &std::path::Path, remote_path_opt: Option<&String>) -> Result<PathBuf, AppError> {
-    let mut target_path = base_path.to_path_buf();
-
-    if let Some(remote_path_str) = remote_path_opt {
-        if !remote_path_str.is_empty() {
-            target_path.push(sanitize_path(remote_path_str));
+/// Resolves the sync path based on configuration and an optional remote path from the client.
+/// If the remote path is provided, it must be absolute. Otherwise, the configured default is used.
+/// A security check ensures that the resolved path is within the application's CWD.
+async fn resolve_sync_path(
+    config_path: &std::path::Path,
+    remote_path_opt: Option<&String>,
+) -> Result<PathBuf, AppError> {
+    let target_path = match remote_path_opt {
+        Some(remote_path_str) if !remote_path_str.is_empty() => {
+            let p = std::path::PathBuf::from(remote_path_str);
+            if !p.is_absolute() {
+                error!("Remote path must be absolute: {}", remote_path_str);
+                return Err(AppError::Config(anyhow::anyhow!(
+                    "The provided remote_dir must be an absolute path."
+                )));
+            }
+            p
         }
-    }
+        _ => config_path.to_path_buf(),
+    };
 
-    let canonical_base = base_path.canonicalize().map_err(|e| {
-        error!("Base sync directory '{}' not found or invalid: {}", base_path.display(), e);
+    let canonical_target = target_path.canonicalize().map_err(|e| {
+        error!("Sync path '{}' not found or invalid: {}", target_path.display(), e);
         AppError::Io(e)
     })?;
 
-    let canonical_target = target_path.canonicalize().map_err(|e| {
-        error!("Target path '{}' not found or invalid: {}", target_path.display(), e);
-        AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "The specified path does not exist."))
-    })?;
-
-    if !canonical_target.starts_with(&canonical_base) {
-        error!("Security violation: Attempt to access path '{}' which is outside of sync root '{}'", canonical_target.display(), canonical_base.display());
-        return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access denied.")));
+    // Security check: ensure the target path is within the application's root directory.
+    let app_root = std::env::current_dir()?.canonicalize()?;
+    if !canonical_target.starts_with(&app_root) {
+        error!(
+            "Security violation: Attempt to sync to a path outside of the application root. Target: {}, Root: {}",
+            canonical_target.display(),
+            app_root.display()
+        );
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Sync directory must be within the application root directory.",
+        )));
     }
 
     Ok(canonical_target)
@@ -448,7 +462,7 @@ async fn get_sync_manifest_handler(
 ) -> Result<Json<HashMap<String, String>>, AppError> {
     let config = state.config.read().await;
     let base_path = PathBuf::from(&config.sync.target_path);
-    let target_path = resolve_safe_sync_path(&base_path, params.remote_path.as_ref()).await?;
+    let target_path = resolve_sync_path(&base_path, params.remote_path.as_ref()).await?;
 
     let excludes = config.sync.default_excludes.clone();
     let manifest = tokio::task::spawn_blocking(move || {
@@ -708,26 +722,15 @@ async fn download_zip_handler(
 
 async fn sync_code_handler(
     State(state): State<AppState>,
+    Query(params): Query<SyncRequest>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let config = state.config.read().await;
-    let target_path_str = config.sync.target_path.to_string_lossy();
-
-    if target_path_str.is_empty() {
-        return Ok(Json(serde_json::json!({"error": "Sync target path not configured"})));
-    }
-
-    let target_path = PathBuf::from(target_path_str.to_string());
+    let base_path = PathBuf::from(&config.sync.target_path);
+    let canonical_target = resolve_sync_path(&base_path, params.remote_path.as_ref()).await?;
 
     // Ensure the base directory exists
-    tokio_fs::create_dir_all(&target_path).await?;
-    
-    // Canonicalize the path to resolve any relative parts and get a stable, absolute path.
-    // This is the core of the fix.
-    let canonical_target = target_path.canonicalize().map_err(|e| {
-        error!("Sync target path '{}' not found or invalid: {}", target_path.display(), e);
-        AppError::Io(e)
-    })?;
+    tokio_fs::create_dir_all(&canonical_target).await?;
 
     let mut files_written = 0;
     while let Some(field) = multipart.next_field().await? {
