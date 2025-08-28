@@ -9,6 +9,8 @@ use axum::{
 };
 use axum::extract::{multipart::MultipartError, Multipart};
 use clap::Parser;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{migrate::MigrateDatabase, Sqlite, SqlitePool};
@@ -17,6 +19,7 @@ use std::{
     fs::File,
     io::{Read, Write},
     path::PathBuf,
+    os::unix::process::CommandExt,
     sync::Arc,
 };
 use tokio::{
@@ -26,7 +29,7 @@ use tokio::{
 };
 use tokio_util::io::ReaderStream;
 use tower_http::{cors::CorsLayer, services::ServeDir};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::write::{FileOptions, ZipWriter};
@@ -53,13 +56,15 @@ pub struct Task {
     pub conda_env: Option<String>,
     pub working_dir: Option<String>,
     pub status: TaskStatus,
+    #[sqlx(default)]
+    pub pid: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub log_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "task_status", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -159,7 +164,16 @@ async fn main() -> Result<()> {
     }
     
     let db = SqlitePool::connect(database_url).await?;
-    sqlx::migrate!("./migrations").run(&db).await?;
+    info!("Running database migrations...");
+    match sqlx::migrate!("./migrations").run(&db).await {
+        Ok(_) => info!("Database migrations completed successfully."),
+        Err(e) => {
+            error!("Database migration failed: {}", e);
+            // The application will continue, but may be in a degraded state
+            // if the schema is out of date. The #[sqlx(default)] attribute
+            // on new fields helps prevent crashes.
+        }
+    }
     
     let mut config = config::Config::load(&db).await?;
     if let Some(port) = args.port {
@@ -252,18 +266,23 @@ async fn create_task_handler(
         conda_env: Some(conda_env.clone()),
         working_dir: request.working_dir.clone(),
         status: TaskStatus::Queued,
+        pid: None,
         created_at: chrono::Utc::now(),
         started_at: None,
         finished_at: None,
         log_path: None,
     };
     
-    sqlx::query!(
-        "INSERT INTO tasks (id, name, command, conda_env, working_dir, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        task.id, task.name, task.command, task.conda_env, task.working_dir, task.status, task.created_at
-    )
-    .execute(&state.db)
-    .await?;
+    sqlx::query("INSERT INTO tasks (id, name, command, conda_env, working_dir, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(&task.id)
+        .bind(&task.name)
+        .bind(&task.command)
+        .bind(&task.conda_env)
+        .bind(&task.working_dir)
+        .bind(&task.status)
+        .bind(task.created_at)
+        .execute(&state.db)
+        .await?;
     
     state.queue.lock().await.push(id.clone());
     info!("Created task: {} with conda env: {} and command: {}", id, conda_env, request.command);
@@ -280,20 +299,38 @@ async fn get_task_handler(State(state): State<AppState>, Path(id): Path<String>)
 }
 
 async fn stop_task_handler(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
-    // Remove the task from the live tasks map first.
-    // If it's not there, it might have already finished.
-    if let Some(task_info) = state.tasks.write().await.remove(&id) {
-        if let Some(process) = &task_info.process {
-            // Attempt to kill the process.
-            if let Err(e) = process.lock().await.kill().await {
-                error!("Failed to kill process for task {}: {}", id, e);
-                // Even if killing fails, we proceed to mark the task as stopped.
+    // Remove the task from the live tasks map. This prevents the background `wait` task
+    // from overwriting the status after we set it to "Stopped".
+    let _ = state.tasks.write().await.remove(&id);
+
+    // Fetch the task from the database to get the PID.
+    let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::TaskNotFound(id.clone()))?;
+
+    if let Some(pid) = task.pid {
+        if pid > 0 {
+            info!("Attempting to stop process group with PID: {}", pid);
+            // Use nix to kill the entire process group by passing a negative PID.
+            let pgid = Pid::from_raw(-pid as i32);
+            match signal::kill(pgid, Signal::SIGKILL) {
+                Ok(_) => info!("Successfully sent SIGKILL to process group {}", pid),
+                Err(e) => {
+                    // It's not a critical error if the process doesn't exist (e.g., it already finished)
+                    // We can just log a warning.
+                    warn!("Failed to kill process group {}: {}. This might be because the process already stopped.", pid, e);
+                }
             }
         }
     }
 
     let now = chrono::Utc::now();
-    sqlx::query!("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?", TaskStatus::Stopped, now, id)
+    sqlx::query("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?")
+        .bind(TaskStatus::Stopped)
+        .bind(now)
+        .bind(&id)
         .execute(&state.db)
         .await?;
 
@@ -307,7 +344,8 @@ async fn delete_task_handler(State(state): State<AppState>, Path(id): Path<Strin
     let _ = stop_task_handler(State(state.clone()), Path(id.clone())).await;
 
     // Then, delete the record from the database.
-    sqlx::query!("DELETE FROM tasks WHERE id = ?", id)
+    sqlx::query("DELETE FROM tasks WHERE id = ?")
+        .bind(&id)
         .execute(&state.db)
         .await?;
     state.tasks.write().await.remove(&id);
@@ -794,19 +832,6 @@ impl TaskManager {
         let log_path = log_dir.join("task.log");
         let log_file = std::fs::File::create(&log_path)?;
 
-        let now = chrono::Utc::now();
-        let log_path_str = log_path.to_str().map(|s| s.to_string());
-
-        task.status = TaskStatus::Running;
-        task.started_at = Some(now);
-        task.log_path = log_path_str.clone();
-
-        sqlx::query!(
-            "UPDATE tasks SET status = ?, started_at = ?, log_path = ? WHERE id = ?",
-            task.status, task.started_at, task.log_path, task_id
-        )
-        .execute(&state.db).await?;
-
         let working_dir = task.working_dir.clone().unwrap_or_else(|| config.tasks.working_directory.to_string_lossy().to_string());
 
         let mut cmd = Command::new("bash");
@@ -816,7 +841,38 @@ impl TaskManager {
             .stdout(log_file.try_clone()?)
             .stderr(log_file);
 
+        // Set the process group ID to ensure the process and its children can be killed together.
+        unsafe {
+            cmd.pre_exec(|| {
+                nix::unistd::setsid()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("setsid failed: {}", e)))?;
+                Ok(())
+            });
+        }
+
         let child = cmd.spawn()?;
+        let pid = child.id().map(|id| id as i64);
+
+        let now = chrono::Utc::now();
+        let log_path_str = log_path.to_str().map(|s| s.to_string());
+
+        task.status = TaskStatus::Running;
+        task.started_at = Some(now);
+        task.log_path = log_path_str.clone();
+        task.pid = pid;
+
+        if let Err(e) = sqlx::query("UPDATE tasks SET status = ?, started_at = ?, log_path = ?, pid = ? WHERE id = ?")
+            .bind(task.status)
+            .bind(task.started_at)
+            .bind(&task.log_path)
+            .bind(task.pid)
+            .bind(task_id)
+            .execute(&state.db).await {
+            error!("Failed to update task {} to running state: {}", task_id, e);
+            // If we can't update the DB, we shouldn't proceed.
+            return Err(e.into());
+        }
+
         let child_arc = Arc::new(Mutex::new(child));
 
         let task_info = TaskInfo {
@@ -842,11 +898,11 @@ impl TaskManager {
                 let final_status = if status.success() { TaskStatus::Completed } else { TaskStatus::Failed };
                 let finished_at = chrono::Utc::now();
 
-                if let Err(e) = sqlx::query!(
-                    "UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?",
-                    final_status, finished_at, wait_task_id
-                )
-                .execute(&wait_state.db).await {
+                if let Err(e) = sqlx::query("UPDATE tasks SET status = ?, finished_at = ? WHERE id = ?")
+                    .bind(final_status)
+                    .bind(finished_at)
+                    .bind(&wait_task_id)
+                    .execute(&state.db).await {
                     error!("Failed to update task {} status after completion: {}", wait_task_id, e);
                 }
                 info!("Task {} finished with status: {:?}", wait_task_id, final_status);
