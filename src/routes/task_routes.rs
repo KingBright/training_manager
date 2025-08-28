@@ -16,10 +16,10 @@ use crate::{
 pub fn create_router() -> Router<AppState> {
     Router::new()
         .route("/api/tasks", get(list_tasks_handler).post(create_task_handler))
-        .route("/api/tasks/:id", get(get_task_handler).delete(delete_task_handler))
-        .route("/api/tasks/:id/stop", post(stop_task_handler))
-        .route("/api/tasks/:id/logs", get(get_task_logs_handler))
-        .route("/api/tasks/:id/metrics", get(get_task_metrics_handler))
+        .route("/api/tasks/{id}", get(get_task_handler).delete(delete_task_handler))
+        .route("/api/tasks/{id}/stop", post(stop_task_handler))
+        .route("/api/tasks/{id}/logs", get(get_task_logs_handler))
+        .route("/api/tasks/{id}/metrics", get(get_task_metrics_handler))
         .route("/api/queue", get(get_queue_handler))
 }
 
