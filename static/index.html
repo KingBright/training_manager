@@ -11,6 +11,26 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
     <style>
+        .progress-bar {
+            width: 100%;
+            background-color: #e9ecef;
+            border-radius: .375rem;
+            height: 20px;
+            display: flex;
+            overflow: hidden;
+        }
+        .progress-bar-inner {
+            background-color: #667eea;
+            color: white;
+            text-align: center;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+            transition: width .6s ease;
+        }
         * {
             margin: 0;
             padding: 0;
@@ -341,7 +361,10 @@
                     <i class="fas fa-tasks"></i> 任务管理
                 </div>
                 <div class="tab" :class="{ active: activeTab === 'metrics' }" @click="activeTab = 'metrics'">
-                    <i class="fas fa-chart-line"></i> 训练指标
+                    <i class="fas fa-chart-line"></i> 訓練指標
+                </div>
+                <div class="tab" :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">
+                    <i class="fas fa-server"></i> 系統資源
                 </div>
                 <div class="tab" :class="{ active: activeTab === 'fileManager' }" @click="activeTab = 'fileManager'">
                     <i class="fas fa-folder"></i> 文件管理
@@ -358,8 +381,8 @@
             <div v-show="activeTab === 'metrics'">
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                        <h2><i class="fas fa-chart-line"></i> 训练指标</h2>
-                         <button v-if="activeMetricTask" @click="refreshMetrics(activeMetricTask)" class="btn btn-secondary"><i class="fas fa-sync-alt"></i> 刷新指标</button>
+                        <h2><i class="fas fa-chart-line"></i> 訓練指標</h2>
+                         <button v-if="activeMetricTask" @click="refreshMetrics(activeMetricTask)" class="btn btn-secondary"><i class="fas fa-sync-alt"></i> 刷新指標</button>
                     </div>
 
                     <!-- Sub-tabs for running tasks -->
@@ -402,6 +425,99 @@
                      <div v-if="runningTasks.length > 0 && !activeMetricTask" style="text-align: center; color: #666; padding: 40px;">
                         <i class="fas fa-mouse-pointer" style="font-size: 3rem; opacity: 0.3; margin-bottom: 20px;"></i><br>
                         请从上方选择一个正在运行的任务以查看其指标。
+                    </div>
+                </div>
+            </div>
+
+            <!-- 系统资源面板 -->
+            <div v-show="activeTab === 'resources'">
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2><i class="fas fa-server"></i> 系统资源监控</h2>
+                        <button @click="loadSystemResources" class="btn btn-secondary"><i class="fas fa-sync-alt"></i> 刷新</button>
+                    </div>
+
+                    <div v-if="!systemResources" style="text-align: center; color: #666; padding: 40px;">
+                        <div class="loading" style="width: 40px; height: 40px; margin: 0 auto;"></div>
+                        <p style="margin-top: 15px;">正在加载系统资源信息...</p>
+                    </div>
+
+                    <div v-else>
+                        <!-- CPU Info -->
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">CPU</h3>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px;">
+                                <div v-for="(cpu, index) in systemResources.cpus" :key="index" style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
+                                    <div style="font-weight: 600; color: #333;">CPU {{ index }}</div>
+                                    <small style="color: #666;">{{ cpu.brand }} @ {{ cpu.frequency }} MHz</small>
+                                    <div class="progress-bar" style="margin-top: 10px;">
+                                        <div class="progress-bar-inner" :style="{ width: cpu.usage.toFixed(1) + '%' }">
+                                            {{ cpu.usage.toFixed(1) }}%
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Memory Info -->
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">内存</h3>
+                             <div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 10px;">
+                                    <span>总内存: {{ formatBytes(systemResources.memory.total) }}</span>
+                                    <span>已用: {{ formatBytes(systemResources.memory.used) }} ({{ (systemResources.memory.used / systemResources.memory.total * 100).toFixed(1) }}%)</span>
+                                    <span>可用: {{ formatBytes(systemResources.memory.free) }}</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-bar-inner" :style="{ width: (systemResources.memory.used / systemResources.memory.total * 100) + '%' }">
+                                        {{ (systemResources.memory.used / systemResources.memory.total * 100).toFixed(1) }}%
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- GPU Info -->
+                        <div>
+                            <h3 style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">GPU</h3>
+                            <div v-if="systemResources.gpus.length === 0" style="color: #666;">
+                                <i class="fas fa-info-circle"></i> 未检测到 NVIDIA GPU。
+                            </div>
+                            <div v-else style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 20px;">
+                                <div v-for="(gpu, index) in systemResources.gpus" :key="index" style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                                    <div style="font-weight: 600; font-size: 1.1rem; margin-bottom: 15px;">GPU {{ index }}: {{ gpu.name }}</div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                        <div><strong>驱动版本:</strong> {{ gpu.driver_version }}</div>
+                                        <div><strong>温度:</strong> {{ gpu.temperature }}°C</div>
+                                        <div>
+                                            <strong>显存:</strong>
+                                            {{ formatBytes(gpu.memory_used) }} / {{ formatBytes(gpu.memory_total) }}
+                                            <div class="progress-bar" style="margin-top: 5px;">
+                                                <div class="progress-bar-inner" :style="{ width: (gpu.memory_used / gpu.memory_total * 100) + '%' }">
+                                                     {{ (gpu.memory_used / gpu.memory_total * 100).toFixed(1) }}%
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <strong>GPU利用率:</strong>
+                                            <div class="progress-bar" style="margin-top: 5px;">
+                                                <div class="progress-bar-inner" :style="{ width: gpu.utilization + '%' }">
+                                                    {{ gpu.utilization }}%
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <strong>功耗:</strong>
+                                            {{ gpu.power_draw }}W / {{ gpu.power_limit }}W
+                                            <div class="progress-bar" style="margin-top: 5px;">
+                                                <div class="progress-bar-inner" :style="{ width: (gpu.power_draw / gpu.power_limit * 100) + '%' }">
+                                                    {{ (gpu.power_draw / gpu.power_limit * 100).toFixed(1) }}%
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -777,6 +893,8 @@
                         files: [],
                         isLoading: false,
                     },
+                    systemResources: null,
+                    resourcesAutoRefreshIntervalId: null,
                     metricsAutoRefreshIntervalId: null,
                     chartColorPalette: [
                         '#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6',
@@ -815,12 +933,18 @@
                     if (newTab === 'fileManager') {
                         this.navigateToFileManager();
                     }
-                    // When the tab changes, manage the timer.
+                    // When the tab changes, manage the timers.
                     if (oldTab === 'metrics' && this.metricsAutoRefreshIntervalId) {
                         this.stopMetricsAutoRefresh();
                     }
                     if (newTab === 'metrics' && this.activeMetricTask) {
                         this.startMetricsAutoRefresh(this.activeMetricTask);
+                    }
+                    if (oldTab === 'resources' && this.resourcesAutoRefreshIntervalId) {
+                        this.stopResourcesAutoRefresh();
+                    }
+                    if (newTab === 'resources') {
+                        this.startResourcesAutoRefresh();
                     }
                 },
                 runningTasks(newRunningTasks, oldRunningTasks) {
@@ -852,6 +976,7 @@
                 this.loadCondaEnvs();
                 this.loadSyncConfig();
                 this.loadFiles(''); // Initial load for file manager
+                this.loadSystemResources(); // Initial load for resources
                 setInterval(() => {
                     this.loadTasks();
                     this.loadQueue();
@@ -1355,6 +1480,35 @@
                     if (!dateString) return '';
                     const date = new Date(dateString);
                     return date.toLocaleString('zh-CN');
+                },
+                async loadSystemResources() {
+                    try {
+                        const response = await axios.get('/api/resources');
+                        this.systemResources = response.data;
+                    } catch (error) {
+                        toastr.error('加载系统资源失败: ' + (error.response?.data?.error || error.message));
+                    }
+                },
+                startResourcesAutoRefresh() {
+                    this.stopResourcesAutoRefresh(); // Prevent multiple timers
+                    this.loadSystemResources(); // Load immediately
+                    this.resourcesAutoRefreshIntervalId = setInterval(() => {
+                        this.loadSystemResources();
+                    }, 5000); // Refresh every 5 seconds
+                },
+                stopResourcesAutoRefresh() {
+                    if (this.resourcesAutoRefreshIntervalId) {
+                        clearInterval(this.resourcesAutoRefreshIntervalId);
+                        this.resourcesAutoRefreshIntervalId = null;
+                    }
+                },
+                formatBytes(bytes, decimals = 2) {
+                    if (bytes === 0) return '0 Bytes';
+                    const k = 1024;
+                    const dm = decimals < 0 ? 0 : decimals;
+                    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
                 }
             }
         }).mount('#app');
