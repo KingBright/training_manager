@@ -822,6 +822,13 @@
                     if (newTab === 'metrics' && this.activeMetricTask) {
                         this.startMetricsAutoRefresh(this.activeMetricTask);
                     }
+                },
+                runningTasks(newRunningTasks, oldRunningTasks) {
+                    // If we are on the metrics tab, no task is selected, and running tasks appear...
+                    if (this.activeTab === 'metrics' && !this.activeMetricTask && newRunningTasks.length > 0) {
+                        // ...automatically select the first one.
+                        this.setActiveMetricTask(newRunningTasks[0].id);
+                    }
                 }
             },
             computed: {
