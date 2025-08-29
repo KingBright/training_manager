@@ -343,6 +343,9 @@
                 <div class="tab" :class="{ active: activeTab === 'metrics' }" @click="activeTab = 'metrics'">
                     <i class="fas fa-chart-line"></i> 训练指标
                 </div>
+                <div class="tab" :class="{ active: activeTab === 'fileManager' }" @click="activeTab = 'fileManager'">
+                    <i class="fas fa-folder"></i> 文件管理
+                </div>
                 <div class="tab" :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">
                     <i class="fas fa-sync-alt"></i> 代码同步
                 </div>
@@ -537,6 +540,64 @@
                 </div>
             </div>
 
+            <!-- 文件管理面板 -->
+            <div v-show="activeTab === 'fileManager'">
+                <div class="card">
+                    <h2><i class="fas fa-folder-open"></i> 文件管理</h2>
+                    <p style="margin-bottom: 20px; color: #666;">
+                        浏览、下载或删除工作目录中的文件和文件夹。
+                    </p>
+
+                    <!-- Breadcrumbs -->
+                    <div style="margin-bottom: 20px; padding: 10px; background: #f8f9fa; border-radius: 8px; font-size: 14px;">
+                        <template v-for="(crumb, index) in fileManagerBreadcrumbs" :key="crumb.path">
+                            <a href="#" @click.prevent="navigateToFileManager(crumb.path)" style="text-decoration: none; color: #007bff; font-weight: 500;">{{ crumb.name }}</a>
+                            <span v-if="index < fileManagerBreadcrumbs.length - 1" style="margin: 0 5px;">/</span>
+                        </template>
+                    </div>
+
+                    <!-- File List -->
+                    <div v-if="fileManager.isLoading" style="text-align: center; padding: 40px;">
+                        <div class="loading" style="width: 40px; height: 40px;"></div>
+                        <p style="margin-top: 10px; color: #666;">正在加载...</p>
+                    </div>
+                    <div v-else>
+                        <table class="table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="text-align: left; border-bottom: 2px solid #dee2e6;">
+                                    <th style="padding: 12px; width: 50px;">类型</th>
+                                    <th style="padding: 12px;">名称</th>
+                                    <th style="padding: 12px; width: 220px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="file in fileManager.files" :key="file.path" style="border-bottom: 1px solid #e9ecef;">
+                                    <td style="padding: 12px;">
+                                        <i :class="['fas', file.is_dir ? 'fa-folder' : 'fa-file-alt']" style="color: #6c757d; font-size: 1.2rem;"></i>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <a v-if="file.is_dir" href="#" @click.prevent="navigateToFileManager(file.path)" style="text-decoration: none; color: #007bff; font-weight: 500;">
+                                            {{ file.name }}
+                                        </a>
+                                        <span v-else>{{ file.name }}</span>
+                                    </td>
+                                    <td style="padding: 12px;">
+                                        <button @click="downloadFile(file)" class="btn btn-secondary" style="--btn-padding: 8px 16px; --btn-font-size: 12px;"><i class="fas fa-download"></i> 下载</button>
+                                        <button @click="deleteFile(file)" class="btn btn-danger" style="--btn-padding: 8px 16px; --btn-font-size: 12px;"><i class="fas fa-trash"></i> 删除</button>
+                                    </td>
+                                </tr>
+                                <tr v-if="!fileManager.files.length">
+                                    <td colspan="3" style="text-align: center; padding: 40px; color: #666;">
+                                        <i class="fas fa-box-open" style="font-size: 2rem; opacity: 0.5; margin-bottom: 10px;"></i><br>
+                                        目录为空
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- 代码同步面板 -->
             <div v-show="activeTab === 'sync'">
                 <div class="card">
@@ -711,6 +772,11 @@
                     syncResult: '',
                     isDownloading: false,
                     downloadStatus: '',
+                    fileManager: {
+                        currentPath: '',
+                        files: [],
+                        isLoading: false,
+                    },
                     metricsAutoRefreshIntervalId: null,
                     chartColorPalette: [
                         '#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6',
@@ -746,6 +812,9 @@
                     }
                 },
                 activeTab(newTab, oldTab) {
+                    if (newTab === 'fileManager') {
+                        this.navigateToFileManager();
+                    }
                     // When the tab changes, manage the timer.
                     if (oldTab === 'metrics' && this.metricsAutoRefreshIntervalId) {
                         this.stopMetricsAutoRefresh();
@@ -755,6 +824,19 @@
                     }
                 }
             },
+            computed: {
+                ...Vue.computed,
+                fileManagerBreadcrumbs() {
+                    if (!this.fileManager.currentPath) return [];
+                    const parts = this.fileManager.currentPath.split('/').filter(p => p);
+                    let current = '';
+                    const crumbs = parts.map(part => {
+                        current += `/${part}`;
+                        return { name: part, path: current.substring(1) };
+                    });
+                    return [{ name: '工作目录', path: '' }, ...crumbs];
+                }
+            },
             async mounted() {
                 this.charts = {};
                 await this.loadConfig();
@@ -762,12 +844,46 @@
                 this.loadQueue();
                 this.loadCondaEnvs();
                 this.loadSyncConfig();
+                this.loadFiles(''); // Initial load for file manager
                 setInterval(() => {
                     this.loadTasks();
                     this.loadQueue();
                 }, 5000);
             },
             methods: {
+                async loadFiles(path) {
+                    this.fileManager.isLoading = true;
+                    try {
+                        const response = await axios.get('/api/files', { params: { path } });
+                        this.fileManager.files = response.data;
+                        this.fileManager.currentPath = path;
+                    } catch (error) {
+                        toastr.error('加载文件列表失败: ' + (error.response?.data?.error || error.message));
+                    } finally {
+                        this.fileManager.isLoading = false;
+                    }
+                },
+                async deleteFile(file) {
+                    if (!confirm(`确定要删除 '${file.name}' 吗？此操作不可恢复。`)) {
+                        return;
+                    }
+                    try {
+                        await axios.delete('/api/files', { data: { path: file.path } });
+                        toastr.success(`'${file.name}' 已被删除。`);
+                        this.loadFiles(this.fileManager.currentPath); // Refresh list
+                    } catch (error) {
+                        toastr.error('删除失败: ' + (error.response?.data?.error || error.message));
+                    }
+                },
+                downloadFile(file) {
+                    toastr.info(`正在准备 '${file.name}' 的下载...`);
+                    const downloadUrl = `/api/sync/download_zip?remote_path=${encodeURIComponent(file.path)}`;
+                    window.location.href = downloadUrl;
+                },
+                navigateToFileManager(path = '') {
+                    this.activeTab = 'fileManager';
+                    this.loadFiles(path);
+                },
                 setActiveMetricTask(taskId) {
                     this.activeMetricTask = taskId;
                     // The watcher for activeMetricTask will now handle calling refreshMetrics and starting the timer.
