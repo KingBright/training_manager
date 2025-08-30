@@ -17,7 +17,7 @@ pub struct CpuInfo {
 pub struct MemoryInfo {
     pub total: u64,
     pub used: u64,
-    pub free: u64,
+    pub available: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -33,19 +33,41 @@ pub struct GpuInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CpuProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub usage: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GpuProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub memory_used: u64, // in bytes
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SystemResourceInfo {
     pub cpus: Vec<CpuInfo>,
     pub memory: MemoryInfo,
     pub gpus: Vec<GpuInfo>,
+    pub top_cpu_processes: Vec<CpuProcessInfo>,
+    pub top_gpu_processes: Vec<GpuProcessInfo>,
 }
 
 pub async fn get_resources_handler(
     State(_state): State<AppState>,
 ) -> Result<Json<SystemResourceInfo>, AppError> {
-    let (cpus, memory) = tokio::try_join!(get_cpu_info(), get_memory_info())?;
+    let (cpus, memory, top_cpu_processes) =
+        tokio::try_join!(get_cpu_info(), get_memory_info(), get_top_cpu_processes())?;
 
     let gpus = get_gpu_info().await.unwrap_or_else(|e| {
         tracing::warn!("Could not retrieve GPU info: {}", e);
+        Vec::new()
+    });
+
+    let top_gpu_processes = get_top_gpu_processes().await.unwrap_or_else(|e| {
+        tracing::warn!("Could not retrieve GPU process info: {}", e);
         Vec::new()
     });
 
@@ -53,6 +75,8 @@ pub async fn get_resources_handler(
         cpus,
         memory,
         gpus,
+        top_cpu_processes,
+        top_gpu_processes,
     }))
 }
 
@@ -164,7 +188,6 @@ async fn read_proc_stat() -> Result<HashMap<String, ProcStat>, AppError> {
 async fn get_memory_info() -> Result<MemoryInfo, AppError> {
     let meminfo_content = fs::read_to_string("/proc/meminfo").await?;
     let mut total = 0;
-    let mut free = 0;
     let mut available = 0;
 
     for line in meminfo_content.lines() {
@@ -173,7 +196,6 @@ async fn get_memory_info() -> Result<MemoryInfo, AppError> {
             let val = parts[1].parse::<u64>().unwrap_or(0);
             match parts[0] {
                 "MemTotal:" => total = val * 1024, // Assuming KB -> Bytes
-                "MemFree:" => free = val * 1024,
                 "MemAvailable:" => available = val * 1024,
                 _ => {}
             }
@@ -182,7 +204,11 @@ async fn get_memory_info() -> Result<MemoryInfo, AppError> {
 
     let used = total - available;
 
-    Ok(MemoryInfo { total, used, free })
+    Ok(MemoryInfo {
+        total,
+        used,
+        available,
+    })
 }
 
 async fn get_gpu_info() -> Result<Vec<GpuInfo>, anyhow::Error> {
@@ -224,4 +250,80 @@ async fn get_gpu_info() -> Result<Vec<GpuInfo>, anyhow::Error> {
     }
 
     Ok(gpus)
+}
+
+async fn get_top_cpu_processes() -> Result<Vec<CpuProcessInfo>, AppError> {
+    let output = tokio::process::Command::new("ps")
+        .args(["-eo", "%cpu,pid,comm", "--sort=-%cpu"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        tracing::error!(
+            "ps command failed with status: {}. stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Err(AppError::CommandFailed("ps".to_string()));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| AppError::CommandFailed("ps output not utf8".to_string()))?;
+    let mut processes = Vec::new();
+
+    for line in stdout.lines().skip(1).take(10) {
+        // skip header and take top 10
+        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        if parts.len() >= 3 {
+            let usage: f32 = parts[0].parse().unwrap_or(0.0);
+            let pid: u32 = parts[1].parse().unwrap_or(0);
+            let name = parts[2..].join(" ");
+            processes.push(CpuProcessInfo { pid, name, usage });
+        }
+    }
+    Ok(processes)
+}
+
+async fn get_top_gpu_processes() -> Result<Vec<GpuProcessInfo>, AppError> {
+    let output = tokio::process::Command::new("nvidia-smi")
+        .args([
+            "--query-compute-apps=pid,process_name,used_gpu_memory",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        // This can happen if nvidia-smi is not installed, which is not a critical error.
+        // The handler will catch this and return an empty list.
+        return Err(AppError::CommandFailed(
+            "nvidia-smi".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| AppError::CommandFailed("nvidia-smi output not utf8".to_string()))?;
+    let mut processes = Vec::new();
+
+    for line in stdout.trim().lines() {
+        let values: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+        if values.len() >= 3 {
+            // PID, Name, Used Memory (MiB)
+            if let (Ok(pid), name, Ok(memory_used_mib)) =
+                (values[0].parse(), values[1], values[2].parse::<u64>())
+            {
+                processes.push(GpuProcessInfo {
+                    pid,
+                    name: name.to_string(),
+                    memory_used: memory_used_mib * 1024 * 1024, // MiB to Bytes
+                });
+            }
+        }
+    }
+
+    // Sort by memory usage and take top 10
+    processes.sort_by(|a, b| b.memory_used.cmp(&a.memory_used));
+    processes.truncate(10);
+
+    Ok(processes)
 }
