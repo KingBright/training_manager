@@ -466,7 +466,7 @@
                                 <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 10px;">
                                     <span>总内存: {{ formatBytes(systemResources.memory.total) }}</span>
                                     <span>已用: {{ formatBytes(systemResources.memory.used) }} ({{ (systemResources.memory.used / systemResources.memory.total * 100).toFixed(1) }}%)</span>
-                                    <span>可用: {{ formatBytes(systemResources.memory.free) }}</span>
+                                    <span>可用: {{ formatBytes(systemResources.memory.available) }}</span>
                                 </div>
                                 <div class="progress-bar">
                                     <div class="progress-bar-inner" :style="{ width: (systemResources.memory.used / systemResources.memory.total * 100) + '%' }">
@@ -477,7 +477,7 @@
                         </div>
 
                         <!-- GPU Info -->
-                        <div>
+                        <div style="margin-bottom: 30px;">
                             <h3 style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">GPU</h3>
                             <div v-if="systemResources.gpus.length === 0" style="color: #666;">
                                 <i class="fas fa-info-circle"></i> 未检测到 NVIDIA GPU。
@@ -516,6 +516,61 @@
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Top CPU Processes -->
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">CPU 占用 Top 10</h3>
+                            <div v-if="!systemResources.top_cpu_processes || systemResources.top_cpu_processes.length === 0" style="color: #666;">
+                                <i class="fas fa-info-circle"></i> 无法获取进程信息或当前无高占用进程。
+                            </div>
+                            <div v-else>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="text-align: left; border-bottom: 2px solid #dee2e6;">
+                                            <th style="padding: 10px 12px;">PID</th>
+                                            <th style="padding: 10px 12px;">名称</th>
+                                            <th style="padding: 10px 12px;">CPU 使用率</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="proc in systemResources.top_cpu_processes" :key="'cpu-' + proc.pid" style="border-bottom: 1px solid #e9ecef;">
+                                            <td style="padding: 10px 12px;">{{ proc.pid }}</td>
+                                            <td style="padding: 10px 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 13px;">{{ proc.name }}</td>
+                                            <td style="padding: 10px 12px;">{{ proc.usage.toFixed(1) }}%</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Top GPU Processes -->
+                        <div>
+                            <h3 style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">GPU 显存占用 Top 10</h3>
+                            <div v-if="systemResources.gpus.length === 0" style="color: #666;">
+                                <!-- This message is already shown in the GPU info section, so we can keep this minimal -->
+                            </div>
+                            <div v-else-if="!systemResources.top_gpu_processes || systemResources.top_gpu_processes.length === 0" style="color: #666; padding-top: 10px;">
+                                <i class="fas fa-info-circle"></i> 当前没有进程占用 GPU 显存。
+                            </div>
+                            <div v-else>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="text-align: left; border-bottom: 2px solid #dee2e6;">
+                                            <th style="padding: 10px 12px;">PID</th>
+                                            <th style="padding: 10px 12px;">名称</th>
+                                            <th style="padding: 10px 12px;">GPU 显存占用</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="proc in systemResources.top_gpu_processes" :key="'gpu-' + proc.pid" style="border-bottom: 1px solid #e9ecef;">
+                                            <td style="padding: 10px 12px;">{{ proc.pid }}</td>
+                                            <td style="padding: 10px 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 13px;">{{ proc.name }}</td>
+                                            <td style="padding: 10px 12px;">{{ formatBytes(proc.memory_used) }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>

@@ -17,6 +17,8 @@ pub enum AppError {
     TaskAlreadyRunning,
     #[error("Multipart error: {0}")]
     Multipart(#[from] MultipartError),
+    #[error("Command failed: {0}")]
+    CommandFailed(String),
     #[error("Config error: {0}")]
     Config(#[from] anyhow::Error),
 }
@@ -45,6 +47,13 @@ impl IntoResponse for AppError {
                 (
                     StatusCode::BAD_REQUEST,
                     format!("Multipart form error: {}", err),
+                )
+            }
+            AppError::CommandFailed(cmd) => {
+                error!("Command failed: {}", cmd);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Command failed to execute: {}", cmd),
                 )
             }
             AppError::Config(err) => {
