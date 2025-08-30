@@ -914,6 +914,16 @@
                     return this.syncConfig.files.filter(file =>
                         !this.isExcluded(file.webkitRelativePath, this.syncConfig.defaultExcludes)
                     );
+                },
+                fileManagerBreadcrumbs() {
+                    if (!this.fileManager.currentPath) return [];
+                    const parts = this.fileManager.currentPath.split('/').filter(p => p);
+                    let current = '';
+                    const crumbs = parts.map(part => {
+                        current += `/${part}`;
+                        return { name: part, path: current.substring(1) };
+                    });
+                    return [{ name: '工作目录', path: '' }, ...crumbs];
                 }
             },
             watch: {
@@ -953,19 +963,6 @@
                         // ...automatically select the first one.
                         this.setActiveMetricTask(newRunningTasks[0].id);
                     }
-                }
-            },
-            computed: {
-                ...Vue.computed,
-                fileManagerBreadcrumbs() {
-                    if (!this.fileManager.currentPath) return [];
-                    const parts = this.fileManager.currentPath.split('/').filter(p => p);
-                    let current = '';
-                    const crumbs = parts.map(part => {
-                        current += `/${part}`;
-                        return { name: part, path: current.substring(1) };
-                    });
-                    return [{ name: '工作目录', path: '' }, ...crumbs];
                 }
             },
             async mounted() {
