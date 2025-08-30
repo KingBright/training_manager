@@ -11,6 +11,11 @@ pub struct MetricsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesConfig {
+    pub ignore_patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub isaaclab: IsaacLabConfig,
@@ -18,6 +23,7 @@ pub struct Config {
     pub sync: SyncConfig,
     pub tasks: TaskConfig,
     pub metrics: MetricsConfig,
+    pub files: FilesConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +88,9 @@ impl Default for Config {
             },
             metrics: MetricsConfig {
                 auto_refresh_interval_secs: 30,
+            },
+            files: FilesConfig {
+                ignore_patterns: vec![".*".to_string()],
             },
         }
     }
@@ -154,6 +163,12 @@ impl Config {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(default_config.metrics.auto_refresh_interval_secs),
             },
+            files: FilesConfig {
+                ignore_patterns: db_config
+                    .remove("files_ignore_patterns")
+                    .and_then(|v| serde_json::from_str(&v).ok())
+                    .unwrap_or(default_config.files.ignore_patterns),
+            },
         };
         
         if !db_config.is_empty() {
@@ -177,6 +192,8 @@ impl Config {
         kvs.push(("sync_default_excludes", excludes_json));
         kvs.push(("tasks_working_directory", self.tasks.working_directory.to_string_lossy().into_owned()));
         kvs.push(("metrics_auto_refresh_interval_secs", self.metrics.auto_refresh_interval_secs.to_string()));
+        let ignore_patterns_json = serde_json::to_string(&self.files.ignore_patterns)?;
+        kvs.push(("files_ignore_patterns", ignore_patterns_json));
 
         let query_str = "INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at";
 
