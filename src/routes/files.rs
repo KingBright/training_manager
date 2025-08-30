@@ -1,15 +1,16 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::{
     extract::{Query, State},
     Json,
 };
+use glob::Pattern;
 use tokio::fs as tokio_fs;
 use tracing::{error, info};
 
 use crate::{
     error::AppError,
-    models::{AppState, DeleteFileRequest, FileInfo, ListFilesRequest},
+    models::{AppState, DeleteFileRequest, FileInfo, ListFilesRequest, ListFilesResponse},
 };
 
 /// A utility function to sanitize a path string, removing any directory traversal components.
@@ -23,13 +24,19 @@ fn sanitize_path(path_str: &str) -> PathBuf {
 pub async fn list_files_handler(
     State(state): State<AppState>,
     Query(params): Query<ListFilesRequest>,
-) -> Result<Json<Vec<FileInfo>>, AppError> {
+) -> Result<Json<ListFilesResponse>, AppError> {
     let config = state.config.read().await;
     let base_dir = &config.tasks.working_directory;
+    let ignore_patterns: Vec<Pattern> = config
+        .files
+        .ignore_patterns
+        .iter()
+        .filter_map(|p| Pattern::new(p).ok())
+        .collect();
 
     let mut current_path = base_dir.clone();
-    if let Some(p) = params.path {
-        let requested_path = sanitize_path(&p);
+    if let Some(p) = &params.path {
+        let requested_path = sanitize_path(p);
         current_path = base_dir.join(requested_path);
     }
 
@@ -48,12 +55,32 @@ pub async fn list_files_handler(
         )));
     }
 
+    let parent_path = if canonical_current != canonical_base {
+        canonical_current.parent().and_then(|p| {
+            p.strip_prefix(&canonical_base).ok().and_then(|rel_p| {
+                if rel_p == Path::new("") {
+                    Some("/".to_string())
+                } else {
+                    rel_p.to_str().map(String::from)
+                }
+            })
+        })
+    } else {
+        None
+    };
+
     let mut files = Vec::new();
-    let mut read_dir = tokio_fs::read_dir(canonical_current).await?;
+    let mut read_dir = tokio_fs::read_dir(&canonical_current).await?;
 
     while let Some(entry) = read_dir.next_entry().await? {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+
+        // Filter out hidden files/directories
+        if ignore_patterns.iter().any(|p| p.matches(&name)) {
+            continue;
+        }
+
         let is_dir = path.is_dir();
 
         let relative_path = path
@@ -79,7 +106,12 @@ pub async fn list_files_handler(
         }
     });
 
-    Ok(Json(files))
+    let response = ListFilesResponse {
+        parent: parent_path,
+        files,
+    };
+
+    Ok(Json(response))
 }
 
 pub async fn delete_file_handler(

@@ -68,6 +68,12 @@ pub struct DeleteFileRequest {
     pub path: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ListFilesResponse {
+    pub parent: Option<String>,
+    pub files: Vec<FileInfo>,
+}
+
 // --- Application State ---
 
 #[derive(Clone)]
