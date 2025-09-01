@@ -29,6 +29,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     tracing_subscriber::fmt::init();
 
+
+
     let database_url = "sqlite:./isaaclab_manager.db";
     if !Sqlite::database_exists(database_url).await.unwrap_or(false) {
         Sqlite::create_database(database_url).await?;
@@ -44,6 +46,7 @@ async fn main() -> Result<()> {
     }
 
     let mut config = config::Config::load(&db).await?;
+    config.validate().expect("Configuration validation failed");
     if let Some(port) = args.port {
         config.server.port = port;
     }
