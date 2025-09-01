@@ -1443,7 +1443,6 @@
                             for (const item of filesWithCorrectedPaths) {
                                 const localHash = await this.getFileHash(item.file);
                                 if (serverManifest[item.relativePath] === localHash) {
-                                    this.syncResult += `   - [跳过] ${item.relativePath} (未更改)\n`;
                                     skippedCount++;
                                 } else {
                                     this.syncResult += `   - [待上传] ${item.relativePath} (新增或已更改)\n`;
