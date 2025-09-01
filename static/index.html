@@ -1103,6 +1103,9 @@
                     }
                 },
                 async saveConfig() {
+                    if (!confirm('确定要保存配置吗？某些更改可能需要重启服务才能生效。')) {
+                        return;
+                    }
                     this.isSavingConfig = true;
                     try {
                         // First, parse the JSON from the textarea back into the main object
@@ -1200,6 +1203,9 @@
                     }
                 },
                 async stopTask(taskId) {
+                    if (!confirm('确定要停止这个任务吗？')) {
+                        return;
+                    }
                     try {
                         await axios.post(`/api/tasks/${taskId}/stop`);
                         this.loadTasks();
@@ -1209,6 +1215,9 @@
                     }
                 },
                 async deleteTask(taskId) {
+                    if (!confirm('确定要删除这个任务吗？此操作不可恢复。')) {
+                        return;
+                    }
                     try {
                         await axios.delete(`/api/tasks/${taskId}`);
                         this.loadTasks();
@@ -1403,6 +1412,9 @@
                     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
                 },
                 async syncCode() {
+                    if (!confirm('确定要同步代码吗？这将会覆盖服务器上的文件。')) {
+                        return;
+                    }
                     // Filter out 0-byte files (directories) which can cause backend parsing errors.
                     let initialFiles = this.filteredSyncFiles.filter(f => f.size > 0);
 
