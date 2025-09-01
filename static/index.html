@@ -1039,10 +1039,16 @@
                     this.fileManager.isLoading = true;
                     try {
                         const response = await axios.get('/api/files', { params: { path } });
-                        this.fileManager.files = response.data;
+                        if (Array.isArray(response.data)) {
+                            // Filter out null/undefined entries and entries without a path property
+                            this.fileManager.files = response.data.filter(file => file && file.path != null);
+                        } else {
+                            this.fileManager.files = [];
+                        }
                         this.fileManager.currentPath = path;
                     } catch (error) {
                         toastr.error('加载文件列表失败: ' + (error.response?.data?.error || error.message));
+                        this.fileManager.files = []; // Also clear on error.
                     } finally {
                         this.fileManager.isLoading = false;
                     }
@@ -1064,9 +1070,9 @@
                     const downloadUrl = `/api/sync/download_zip?remote_path=${encodeURIComponent(file.path)}`;
                     window.location.href = downloadUrl;
                 },
-                navigateToFileManager(path = '') {
+                navigateToFileManager(path) {
                     this.activeTab = 'fileManager';
-                    this.loadFiles(path);
+                    this.loadFiles(path || '');
                 },
                 setActiveMetricTask(taskId) {
                     this.activeMetricTask = taskId;
