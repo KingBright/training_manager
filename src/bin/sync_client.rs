@@ -150,9 +150,13 @@ async fn handle_upload(client: &Client, server: &str, dir: &Path, remote_dir: Op
         println!("\nAll files are up to date. Nothing to upload.");
     } else {
         println!(
-            "\nFound {} files to upload.",
+            "\nFound {} files to upload:",
             files_to_upload.len()
         );
+        for file in &files_to_upload {
+            println!("  - {}", file);
+        }
+        println!();
 
         let mut form = reqwest::multipart::Form::new();
         for relative_path in &files_to_upload {
@@ -165,14 +169,13 @@ async fn handle_upload(client: &Client, server: &str, dir: &Path, remote_dir: Op
 
         let upload_url = format!("{}/api/sync", server);
 
-        let pb_upload = ProgressBar::new_spinner();
-        pb_upload.enable_steady_tick(Duration::from_millis(120));
-        pb_upload.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{spinner:.blue} {msg}")?,
+        let pb_upload = ProgressBar::new(1);
+        pb_upload.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {msg}")?
+            .progress_chars("=> ")
         );
-        pb_upload.set_message("Uploading files...");
+        pb_upload.set_message(format!("Uploading {} files...", files_to_upload.len()));
+        pb_upload.enable_steady_tick(Duration::from_millis(120));
 
         let mut request_builder = client.post(&upload_url);
         if let Some(rd) = remote_dir {
@@ -185,6 +188,7 @@ async fn handle_upload(client: &Client, server: &str, dir: &Path, remote_dir: Op
             .await?
             .error_for_status()?;
 
+        pb_upload.inc(1);
         let response_json: serde_json::Value = response.json().await?;
         let message = response_json["message"].as_str().unwrap_or("Upload complete.");
 
