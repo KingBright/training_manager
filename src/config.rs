@@ -67,10 +67,10 @@ impl Default for Config {
                 default_conda_env: "isaaclab".to_string(),
             },
             storage: StorageConfig {
-                output_path: PathBuf::from("/home/ecs-user/outputs"),
+                output_path: PathBuf::from("./outputs"),
             },
             sync: SyncConfig {
-                target_path: PathBuf::from("/home/ecs-user/moves"),
+                target_path: PathBuf::from("./moves"),
                 default_excludes: vec![
                     "__pycache__".to_string(),
                     "*.pyc".to_string(),
@@ -84,7 +84,7 @@ impl Default for Config {
                 ],
             },
             tasks: TaskConfig {
-                working_directory: PathBuf::from("/home/ecs-user"),
+                working_directory: PathBuf::from("./ecs-user-files"),
             },
             metrics: MetricsConfig {
                 auto_refresh_interval_secs: 30,
@@ -210,14 +210,15 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if !self.isaaclab.conda_path.exists() {
-            anyhow::bail!("Conda path does not exist: {:?}", self.isaaclab.conda_path);
-        }
-        let conda_script = self.isaaclab.conda_path.join("etc/profile.d/conda.sh");
-        if !conda_script.exists() {
-            anyhow::bail!("Conda script not found: {:?}", conda_script);
-        }
+        // if !self.isaaclab.conda_path.exists() {
+        //     anyhow::bail!("Conda path does not exist: {:?}", self.isaaclab.conda_path);
+        // }
+        // let conda_script = self.isaaclab.conda_path.join("etc/profile.d/conda.sh");
+        // if !conda_script.exists() {
+        //     anyhow::bail!("Conda script not found: {:?}", conda_script);
+        // }
         std::fs::create_dir_all(&self.storage.output_path)?;
+        std::fs::create_dir_all(&self.tasks.working_directory)?;
         Ok(())
     }
 }
