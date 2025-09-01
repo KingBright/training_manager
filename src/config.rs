@@ -90,7 +90,7 @@ impl Default for Config {
                 auto_refresh_interval_secs: 30,
             },
             files: FilesConfig {
-                ignore_patterns: vec![".*".to_string()],
+                ignore_patterns: vec![".*".to_string(), "下载".to_string(), "桌面".to_string(), "公共".to_string(), "模板".to_string(), "图片".to_string(), "音乐".to_string(), "视频".to_string()],
             },
         }
     }
