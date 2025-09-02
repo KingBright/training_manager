@@ -56,6 +56,8 @@ pub struct FileInfo {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub modified_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
