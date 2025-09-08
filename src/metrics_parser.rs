@@ -15,8 +15,6 @@ const FIXED_METRICS: &[&str] = &[
     "Mean value_function loss",
     "Mean surrogate loss",
     "Mean entropy loss",
-    "Mean reward",
-    "Mean episode length",
     "Total timesteps",
     "Iteration time",
     "Time elapsed",
