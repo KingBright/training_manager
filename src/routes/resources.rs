@@ -35,14 +35,14 @@ pub struct GpuInfo {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CpuProcessInfo {
     pub pid: u32,
-    pub name: String,
+    pub command: String,
     pub usage: f32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GpuProcessInfo {
     pub pid: u32,
-    pub name: String,
+    pub command: String,
     pub memory_used: u64, // in bytes
 }
 
@@ -58,15 +58,15 @@ pub struct SystemResourceInfo {
 pub async fn get_resources_handler(
     State(_state): State<AppState>,
 ) -> Result<Json<SystemResourceInfo>, AppError> {
-    let (cpus, memory, top_cpu_processes) =
-        tokio::try_join!(get_cpu_info(), get_memory_info(), get_top_cpu_processes())?;
+    let (cpus, memory, (top_cpu_processes, process_map)) =
+        tokio::try_join!(get_cpu_info(), get_memory_info(), get_all_process_info())?;
 
     let gpus = get_gpu_info().await.unwrap_or_else(|e| {
         tracing::warn!("Could not retrieve GPU info: {}", e);
         Vec::new()
     });
 
-    let top_gpu_processes = get_top_gpu_processes().await.unwrap_or_else(|e| {
+    let top_gpu_processes = get_top_gpu_processes(process_map).await.unwrap_or_else(|e| {
         tracing::warn!("Could not retrieve GPU process info: {}", e);
         Vec::new()
     });
@@ -252,9 +252,9 @@ async fn get_gpu_info() -> Result<Vec<GpuInfo>, anyhow::Error> {
     Ok(gpus)
 }
 
-async fn get_top_cpu_processes() -> Result<Vec<CpuProcessInfo>, AppError> {
+async fn get_all_process_info() -> Result<(Vec<CpuProcessInfo>, HashMap<u32, String>), AppError> {
     let output = tokio::process::Command::new("ps")
-        .args(["-eo", "%cpu,pid,comm", "--sort=-%cpu"])
+        .args(["-eo", "%cpu,pid,args", "--sort=-%cpu"])
         .output()
         .await?;
 
@@ -269,22 +269,34 @@ async fn get_top_cpu_processes() -> Result<Vec<CpuProcessInfo>, AppError> {
 
     let stdout = String::from_utf8(output.stdout)
         .map_err(|_| AppError::CommandFailed("ps output not utf8".to_string()))?;
-    let mut processes = Vec::new();
 
-    for line in stdout.lines().skip(1).take(10) {
-        // skip header and take top 10
-        let parts: Vec<&str> = line.trim().split_whitespace().collect();
-        if parts.len() >= 3 {
-            let usage: f32 = parts[0].parse().unwrap_or(0.0);
-            let pid: u32 = parts[1].parse().unwrap_or(0);
-            let name = parts[2..].join(" ");
-            processes.push(CpuProcessInfo { pid, name, usage });
+    let mut top_cpu_processes = Vec::new();
+    let mut process_map = HashMap::new();
+
+    for line in stdout.lines().skip(1) {
+        let mut parts = line.trim().split_whitespace();
+        if let (Some(cpu_str), Some(pid_str)) = (parts.next(), parts.next()) {
+            let command = parts.collect::<Vec<&str>>().join(" ");
+            if let (Ok(usage), Ok(pid)) = (cpu_str.parse::<f32>(), pid_str.parse::<u32>()) {
+                if !command.is_empty() {
+                    if top_cpu_processes.len() < 10 {
+                        top_cpu_processes.push(CpuProcessInfo {
+                            pid,
+                            command: command.clone(),
+                            usage,
+                        });
+                    }
+                    process_map.insert(pid, command);
+                }
+            }
         }
     }
-    Ok(processes)
+    Ok((top_cpu_processes, process_map))
 }
 
-async fn get_top_gpu_processes() -> Result<Vec<GpuProcessInfo>, AppError> {
+async fn get_top_gpu_processes(
+    process_map: HashMap<u32, String>,
+) -> Result<Vec<GpuProcessInfo>, AppError> {
     let output = tokio::process::Command::new("nvidia-smi")
         .args([
             "--query-compute-apps=pid,process_name,used_gpu_memory",
@@ -295,10 +307,7 @@ async fn get_top_gpu_processes() -> Result<Vec<GpuProcessInfo>, AppError> {
 
     if !output.status.success() {
         // This can happen if nvidia-smi is not installed, which is not a critical error.
-        // The handler will catch this and return an empty list.
-        return Err(AppError::CommandFailed(
-            "nvidia-smi".to_string(),
-        ));
+        return Err(AppError::CommandFailed("nvidia-smi".to_string()));
     }
 
     let stdout = String::from_utf8(output.stdout)
@@ -308,13 +317,16 @@ async fn get_top_gpu_processes() -> Result<Vec<GpuProcessInfo>, AppError> {
     for line in stdout.trim().lines() {
         let values: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
         if values.len() >= 3 {
-            // PID, Name, Used Memory (MiB)
             if let (Ok(pid), name, Ok(memory_used_mib)) =
                 (values[0].parse(), values[1], values[2].parse::<u64>())
             {
+                let command = process_map
+                    .get(&pid)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_string());
                 processes.push(GpuProcessInfo {
                     pid,
-                    name: name.to_string(),
+                    command,
                     memory_used: memory_used_mib * 1024 * 1024, // MiB to Bytes
                 });
             }
@@ -326,4 +338,40 @@ async fn get_top_gpu_processes() -> Result<Vec<GpuProcessInfo>, AppError> {
     processes.truncate(10);
 
     Ok(processes)
+}
+
+#[derive(Serialize)]
+pub struct KillResponse {
+    message: String,
+}
+
+pub async fn kill_process_handler(
+    axum::extract::Path(pid): axum::extract::Path<u32>,
+) -> Result<Json<KillResponse>, AppError> {
+    tracing::info!("Attempting to kill process with PID: {}", pid);
+
+    let status = tokio::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to execute kill command: {}", e);
+            AppError::CommandFailed(format!("Failed to execute kill command for PID {}", pid))
+        })?;
+
+    if status.success() {
+        Ok(Json(KillResponse {
+            message: format!("Process {} terminated successfully.", pid),
+        }))
+    } else {
+        tracing::error!(
+            "Failed to kill process {}. `kill` command exited with status: {}",
+            pid,
+            status
+        );
+        Err(AppError::CommandFailed(format!(
+            "Failed to kill process {}. It might not exist or you may lack permissions.",
+            pid
+        )))
+    }
 }
