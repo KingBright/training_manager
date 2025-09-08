@@ -530,15 +530,19 @@
                                     <thead>
                                         <tr style="text-align: left; border-bottom: 2px solid #dee2e6;">
                                             <th style="padding: 10px 12px;">PID</th>
-                                            <th style="padding: 10px 12px;">名称</th>
+                                            <th style="padding: 10px 12px;">完整命令</th>
                                             <th style="padding: 10px 12px;">CPU 使用率</th>
+                                            <th style="padding: 10px 12px;">操作</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         <tr v-for="proc in systemResources.top_cpu_processes" :key="'cpu-' + proc.pid" style="border-bottom: 1px solid #e9ecef;">
                                             <td style="padding: 10px 12px;">{{ proc.pid }}</td>
-                                            <td style="padding: 10px 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 13px;">{{ proc.name }}</td>
+                                            <td style="padding: 10px 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 13px; max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="proc.command">{{ proc.command }}</td>
                                             <td style="padding: 10px 12px;">{{ proc.usage.toFixed(1) }}%</td>
+                                            <td style="padding: 10px 12px;">
+                                                <button @click="killProcess(proc.pid)" class="btn btn-danger" style="--btn-padding: 8px 16px; --btn-font-size: 12px;"><i class="fas fa-stop"></i> 停止</button>
+                                            </td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -559,15 +563,19 @@
                                     <thead>
                                         <tr style="text-align: left; border-bottom: 2px solid #dee2e6;">
                                             <th style="padding: 10px 12px;">PID</th>
-                                            <th style="padding: 10px 12px;">名称</th>
+                                            <th style="padding: 10px 12px;">完整命令</th>
                                             <th style="padding: 10px 12px;">GPU 显存占用</th>
+                                            <th style="padding: 10px 12px;">操作</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         <tr v-for="proc in systemResources.top_gpu_processes" :key="'gpu-' + proc.pid" style="border-bottom: 1px solid #e9ecef;">
                                             <td style="padding: 10px 12px;">{{ proc.pid }}</td>
-                                            <td style="padding: 10px 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 13px;">{{ proc.name }}</td>
+                                            <td style="padding: 10px 12px; font-family: 'Monaco', 'Consolas', monospace; font-size: 13px; max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="proc.command">{{ proc.command }}</td>
                                             <td style="padding: 10px 12px;">{{ formatBytes(proc.memory_used) }}</td>
+                                            <td style="padding: 10px 12px;">
+                                                <button @click="killProcess(proc.pid)" class="btn btn-danger" style="--btn-padding: 8px 16px; --btn-font-size: 12px;"><i class="fas fa-stop"></i> 停止</button>
+                                            </td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -1585,6 +1593,19 @@
                     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
                     const i = Math.floor(Math.log(bytes) / Math.log(k));
                     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+                },
+                async killProcess(pid) {
+                    if (!confirm(`您确定要终止 PID 为 ${pid} 的进程吗？此操作无法撤销。`)) {
+                        return;
+                    }
+                    try {
+                        await axios.post(`/api/resources/kill/${pid}`);
+                        toastr.success(`进程 ${pid} 已成功终止。`);
+                        // Add a small delay to allow the OS to update process info
+                        setTimeout(() => this.loadSystemResources(), 500);
+                    } catch (error) {
+                        toastr.error('终止进程失败: ' + (error.response?.data?.error || error.message));
+                    }
                 }
             }
         }).mount('#app');
