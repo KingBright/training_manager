@@ -738,6 +738,8 @@
                                 <tr style="text-align: left; border-bottom: 2px solid #dee2e6;">
                                     <th style="padding: 12px; width: 50px;">类型</th>
                                     <th style="padding: 12px;">名称</th>
+                                    <th style="padding: 12px;">创建时间</th>
+                                    <th style="padding: 12px;">修改时间</th>
                                     <th style="padding: 12px; width: 220px;">操作</th>
                                 </tr>
                             </thead>
@@ -751,6 +753,12 @@
                                             {{ file.name }}
                                         </a>
                                         <span v-else>{{ file.name }}</span>
+                                    </td>
+                                    <td style="padding: 12px; font-size: 14px; color: #555;">
+                                        {{ formatDate(file.created_at) }}
+                                    </td>
+                                    <td style="padding: 12px; font-size: 14px; color: #555;">
+                                        {{ formatDate(file.modified_at) }}
                                     </td>
                                     <td style="padding: 12px;">
                                         <button @click="downloadFile(file)" class="btn btn-secondary" style="--btn-padding: 8px 16px; --btn-font-size: 12px;"><i class="fas fa-download"></i> 下载</button>

@@ -81,6 +81,16 @@ pub async fn list_files_handler(
             continue;
         }
 
+        let metadata = tokio_fs::metadata(&path).await;
+        let (created_at, modified_at) = if let Ok(meta) = metadata {
+            (
+                meta.created().ok().map(chrono::DateTime::from),
+                meta.modified().ok().map(chrono::DateTime::from),
+            )
+        } else {
+            (None, None)
+        };
+
         let is_dir = path.is_dir();
 
         let relative_path = path
@@ -93,6 +103,8 @@ pub async fn list_files_handler(
             name,
             path: relative_path,
             is_dir,
+            created_at,
+            modified_at,
         });
     }
 
