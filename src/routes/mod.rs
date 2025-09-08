@@ -61,7 +61,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/sync/download/{*path}", get(download_file_handler))
         .route("/api/sync/download_zip", get(download_zip_handler))
         .route("/api/resources", get(get_resources_handler))
-        .route("/api/resources/kill/:pid", post(kill_process_handler))
+        .route("/api/resources/kill/{pid}", post(kill_process_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .with_state(state)
