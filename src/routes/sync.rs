@@ -12,6 +12,7 @@ use std::{
     path::PathBuf,
 };
 use tokio::fs as tokio_fs;
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use tracing::error;
 use walkdir::WalkDir;
@@ -382,7 +383,7 @@ pub async fn sync_code_handler(
     tokio_fs::create_dir_all(&canonical_target).await?;
 
     let mut files_written = 0;
-    while let Some(field) = multipart.next_field().await? {
+    while let Some(mut field) = multipart.next_field().await? {
         if let Some(relative_path_str) = field.file_name() {
             let relative_path = sanitize_path(relative_path_str);
 
@@ -405,8 +406,14 @@ pub async fn sync_code_handler(
             if let Some(parent) = dest_path.parent() {
                 tokio_fs::create_dir_all(parent).await?;
             }
-            let data = field.bytes().await?;
-            tokio_fs::write(&dest_path, &data).await?;
+
+            // Stream the file content directly to the destination file
+            let mut file = tokio_fs::File::create(&dest_path).await?;
+
+            while let Some(chunk) = field.chunk().await? {
+                file.write_all(&chunk).await?;
+            }
+
             files_written += 1;
         }
     }

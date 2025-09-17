@@ -10,6 +10,7 @@ use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs as tokio_fs;
+use tokio_util::io::ReaderStream;
 use walkdir::WalkDir;
 use zip::ZipArchive;
 
@@ -161,8 +162,12 @@ async fn handle_upload(client: &Client, server: &str, dir: &Path, remote_dir: Op
         let mut form = reqwest::multipart::Form::new();
         for relative_path in &files_to_upload {
             let local_path = dir.join(relative_path);
-            let file_contents = tokio_fs::read(&local_path).await?;
-            let part = reqwest::multipart::Part::bytes(file_contents)
+            let file = tokio_fs::File::open(&local_path).await?;
+            let file_size = file.metadata().await?.len();
+            let stream = ReaderStream::new(file);
+            let body = reqwest::Body::wrap_stream(stream);
+
+            let part = reqwest::multipart::Part::stream_with_length(body, file_size)
                 .file_name(relative_path.clone());
             form = form.part("files", part);
         }
