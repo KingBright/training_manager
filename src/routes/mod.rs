@@ -1,4 +1,5 @@
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -64,5 +65,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/resources/kill/{pid}", post(kill_process_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(CorsLayer::permissive())
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024)) // 10 GB
         .with_state(state)
 }
